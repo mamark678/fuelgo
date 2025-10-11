@@ -1,0 +1,160 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // --- Helper functions ---
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(ownerId) {
+      return isSignedIn() && request.auth.uid == ownerId;
+    }
+
+    // --- Users ---
+    // Top-level users documents: authenticated read, only the owner can write.
+    match /users/{userId} {
+      allow read: if isOwner(userId);
+
+      // create only by the user themself + must contain basic fields
+      allow create: if request.auth != null
+        && request.auth.uid == userId
+        && request.resource.data.keys().hasAll(['name', 'email'])
+        && request.resource.data.name is string
+        && request.resource.data.email is string;
+
+      allow update, delete: if isOwner(userId);
+
+      // User's claimed offers subcollection
+      match /claimed_offers/{claimId} {
+        allow read: if isOwner(userId);
+        allow create: if isOwner(userId)
+          && request.resource.data.offerId is string
+          && request.resource.data.offerId != ''
+          && request.resource.data.claimedAt is timestamp;
+        allow delete: if isOwner(userId);
+      }
+
+      // User's redeemed vouchers subcollection
+      match /redeemed_vouchers/{redeemedId} {
+        allow read: if isOwner(userId);
+        allow create: if isOwner(userId)
+          && request.resource.data.voucherId is string
+          && request.resource.data.voucherId != ''
+          && request.resource.data.redeemedAt is timestamp;
+        allow delete: if isOwner(userId);
+      }
+    }
+
+    // --- Gas stations ---
+    match /gas_stations/{stationId} {
+      allow read: if true;
+
+      allow create: if isSignedIn()
+        && request.resource.data.ownerId is string
+        && request.resource.data.ownerId == request.auth.uid;
+
+      allow update, delete: if isSignedIn()
+        && resource.data.ownerId == request.auth.uid;
+
+      match /ratings/{ratingId} {
+        allow read: if true;
+        allow create: if isSignedIn()
+          && request.resource.data.userId == request.auth.uid
+          && request.resource.data.rating is number
+          && request.resource.data.createdAt is timestamp;
+        allow update, delete: if isSignedIn() && (
+          request.auth.uid == resource.data.userId ||
+          request.auth.uid == get(/databases/$(database)/documents/gas_stations/$(stationId)).data.ownerId
+        );
+      }
+
+      match /price_history/{historyId} {
+        allow read: if true;
+        allow create: if isSignedIn()
+          && request.resource.data.timestamp is timestamp;
+        allow update, delete: if false;
+      }
+
+      match /vouchers_redemptions/{userId} {
+        allow read: if isSignedIn() && (
+          request.auth.uid == userId ||
+          get(/databases/$(database)/documents/gas_stations/$(stationId)).data.ownerId == request.auth.uid
+        );
+        allow create: if request.auth.uid == userId
+          && request.resource.data.voucherId is string
+          && request.resource.data.voucherId != ''
+          && request.resource.data.stationId == stationId
+          && request.resource.data.claimedAt is timestamp;
+        allow delete: if isSignedIn() && (
+          request.auth.uid == userId ||
+          get(/databases/$(database)/documents/gas_stations/$(stationId)).data.ownerId == request.auth.uid
+        );
+        allow update: if false;
+      }
+    }
+
+    // --- Station ratings top-level ---
+    match /station_ratings/{ratingId} {
+      allow read: if true;
+      allow create: if isSignedIn()
+        && request.resource.data.userId == request.auth.uid;
+      allow update, delete: if false;
+    }
+
+    // --- Comments ---
+    match /comments/{commentId} {
+      allow read: if true;
+      allow create: if isSignedIn()
+        && request.resource.data.userId == request.auth.uid
+        && request.resource.data.createdAt is timestamp;
+      allow update, delete: if request.auth.uid == resource.data.userId;
+    }
+
+    // --- Vouchers top-level ---
+    match /vouchers/{voucherId} {
+      allow read: if true;
+      allow create: if isSignedIn()
+        && request.resource.data.ownerId == request.auth.uid
+        && request.resource.data.stationId is string
+        && request.resource.data.title is string;
+      allow update, delete: if request.auth.uid == resource.data.ownerId;
+
+      match /redemptions/{userId} {
+        allow read: if isSignedIn() && (
+          request.auth.uid == userId ||
+          resource.data.ownerId == request.auth.uid
+        );
+        allow create: if request.auth.uid == userId
+          && request.resource.data.claimedAt is timestamp
+          && request.resource.data.voucherId == voucherId;
+        allow delete: if isSignedIn() && (
+          request.auth.uid == userId ||
+          resource.data.ownerId == request.auth.uid
+        );
+      }
+    }
+
+    // --- Approval Tokens ---
+    match /approvalTokens/{tokenId} {
+      allow read, write: if false; // Only allow through specific rules below
+
+      // Allow creation of new tokens by authenticated users
+      allow create: if isSignedIn()
+        && request.resource.data.userId is string
+        && request.resource.data.userId != ''
+        && request.resource.data.createdAt is timestamp
+        && request.resource.data.expiresAt is timestamp
+        && request.resource.data.used is bool;
+
+      // Allow system/admin access for token validation and updates
+      // This allows the Cloud Function to read and update tokens
+      allow read, update: if true;
+    }
+
+    // --- Default deny ---
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

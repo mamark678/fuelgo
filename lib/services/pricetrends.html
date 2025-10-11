@@ -1,0 +1,572 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gas Price Analytics</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/3.9.1/chart.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            color: #333;
+        }
+
+        .container {
+            max-width: 428px;
+            margin: 0 auto;
+            background: #fff;
+            min-height: 100vh;
+            position: relative;
+            overflow-x: hidden;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #4f46e5, #7c3aed);
+            color: white;
+            padding: 20px;
+            text-align: center;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .header::before {
+            content: '';
+            position: absolute;
+            top: -50%;
+            left: -50%;
+            width: 200%;
+            height: 200%;
+            background: radial-gradient(circle, rgba(255,255,255,0.1) 0%, transparent 70%);
+            animation: pulse 4s ease-in-out infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { transform: scale(1) rotate(0deg); }
+            50% { transform: scale(1.1) rotate(180deg); }
+        }
+
+        .header-content {
+            position: relative;
+            z-index: 2;
+        }
+
+        .header h1 {
+            font-size: 28px;
+            font-weight: 700;
+            margin-bottom: 8px;
+            text-shadow: 0 2px 4px rgba(0,0,0,0.2);
+        }
+
+        .header p {
+            opacity: 0.9;
+            font-size: 16px;
+        }
+
+        .current-price {
+            background: linear-gradient(135deg, #10b981, #059669);
+            margin: -15px 20px 20px 20px;
+            padding: 25px;
+            border-radius: 20px;
+            color: white;
+            text-align: center;
+            box-shadow: 0 10px 30px rgba(16, 185, 129, 0.3);
+            transform: translateY(-10px);
+            position: relative;
+            overflow: hidden;
+        }
+
+        .current-price::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: -100%;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(90deg, transparent, rgba(255,255,255,0.2), transparent);
+            animation: shimmer 3s infinite;
+        }
+
+        @keyframes shimmer {
+            0% { left: -100%; }
+            100% { left: 100%; }
+        }
+
+        .price-value {
+            font-size: 36px;
+            font-weight: 800;
+            margin-bottom: 5px;
+            position: relative;
+            z-index: 2;
+        }
+
+        .price-change {
+            font-size: 16px;
+            opacity: 0.9;
+            position: relative;
+            z-index: 2;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px;
+            padding: 0 20px;
+            margin-bottom: 25px;
+        }
+
+        .stat-card {
+            background: white;
+            padding: 20px;
+            border-radius: 16px;
+            text-align: center;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.08);
+            border: 1px solid rgba(0,0,0,0.05);
+            transition: all 0.3s ease;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .stat-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 8px 30px rgba(0,0,0,0.15);
+        }
+
+        .stat-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 3px;
+            background: linear-gradient(90deg, #4f46e5, #7c3aed);
+        }
+
+        .stat-value {
+            font-size: 24px;
+            font-weight: 700;
+            color: #1f2937;
+            margin-bottom: 5px;
+        }
+
+        .stat-label {
+            font-size: 14px;
+            color: #6b7280;
+            font-weight: 500;
+        }
+
+        .chart-section {
+            padding: 0 20px;
+            margin-bottom: 25px;
+        }
+
+        .section-title {
+            font-size: 20px;
+            font-weight: 700;
+            color: #1f2937;
+            margin-bottom: 15px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .section-title::before {
+            content: '';
+            width: 4px;
+            height: 24px;
+            background: linear-gradient(135deg, #4f46e5, #7c3aed);
+            border-radius: 2px;
+        }
+
+        .chart-container {
+            background: white;
+            border-radius: 16px;
+            padding: 20px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.08);
+            border: 1px solid rgba(0,0,0,0.05);
+            margin-bottom: 20px;
+        }
+
+        .time-filter {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 20px;
+            overflow-x: auto;
+            padding-bottom: 5px;
+        }
+
+        .filter-btn {
+            background: #f3f4f6;
+            border: none;
+            padding: 10px 16px;
+            border-radius: 12px;
+            font-size: 14px;
+            font-weight: 600;
+            color: #6b7280;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            white-space: nowrap;
+            min-width: 60px;
+        }
+
+        .filter-btn.active {
+            background: linear-gradient(135deg, #4f46e5, #7c3aed);
+            color: white;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(79, 70, 229, 0.3);
+        }
+
+        .history-list {
+            padding: 0 20px;
+        }
+
+        .history-item {
+            background: white;
+            border-radius: 12px;
+            padding: 16px;
+            margin-bottom: 12px;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.06);
+            border: 1px solid rgba(0,0,0,0.05);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            transition: all 0.3s ease;
+        }
+
+        .history-item:hover {
+            transform: translateX(5px);
+            box-shadow: 0 4px 20px rgba(0,0,0,0.1);
+        }
+
+        .history-date {
+            font-size: 14px;
+            color: #6b7280;
+            font-weight: 500;
+        }
+
+        .history-price {
+            font-size: 18px;
+            font-weight: 700;
+            color: #1f2937;
+        }
+
+        .trend-up {
+            color: #ef4444;
+        }
+
+        .trend-down {
+            color: #10b981;
+        }
+
+        .bottom-nav {
+            position: fixed;
+            bottom: 0;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 100%;
+            max-width: 428px;
+            background: rgba(255, 255, 255, 0.95);
+            backdrop: blur(20px);
+            border-top: 1px solid rgba(0,0,0,0.1);
+            padding: 15px 20px;
+            display: flex;
+            justify-content: space-around;
+        }
+
+        .nav-item {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 5px;
+            font-size: 12px;
+            color: #6b7280;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+
+        .nav-item.active {
+            color: #4f46e5;
+            transform: translateY(-2px);
+        }
+
+        .nav-icon {
+            width: 24px;
+            height: 24px;
+            border-radius: 6px;
+            background: #f3f4f6;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.3s ease;
+        }
+
+        .nav-item.active .nav-icon {
+            background: linear-gradient(135deg, #4f46e5, #7c3aed);
+            color: white;
+        }
+
+        .loading {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 3px solid rgba(255,255,255,0.3);
+            border-radius: 50%;
+            border-top-color: #fff;
+            animation: spin 1s ease-in-out infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <div class="header-content">
+                <h1>⛽ Gas Tracker</h1>
+                <p>Real-time fuel price analytics</p>
+            </div>
+        </div>
+
+        <div class="current-price">
+            <div class="price-value">$3.42</div>
+            <div class="price-change">↗️ +$0.05 from yesterday</div>
+        </div>
+
+        <div class="stats-grid">
+            <div class="stat-card">
+                <div class="stat-value">$3.28</div>
+                <div class="stat-label">Weekly Low</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value">$3.56</div>
+                <div class="stat-label">Weekly High</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value">$3.38</div>
+                <div class="stat-label">Monthly Avg</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value">+2.1%</div>
+                <div class="stat-label">Monthly Change</div>
+            </div>
+        </div>
+
+        <div class="chart-section">
+            <div class="section-title">Price Trends</div>
+            <div class="time-filter">
+                <button class="filter-btn">7D</button>
+                <button class="filter-btn active">30D</button>
+                <button class="filter-btn">90D</button>
+                <button class="filter-btn">1Y</button>
+                <button class="filter-btn">MAX</button>
+            </div>
+            <div class="chart-container">
+                <canvas id="priceChart" width="300" height="200"></canvas>
+            </div>
+        </div>
+
+        <div class="chart-section">
+            <div class="section-title">Recent History</div>
+            <div class="history-list">
+                <div class="history-item">
+                    <div>
+                        <div class="history-date">Today</div>
+                    </div>
+                    <div class="history-price trend-up">$3.42</div>
+                </div>
+                <div class="history-item">
+                    <div>
+                        <div class="history-date">Yesterday</div>
+                    </div>
+                    <div class="history-price">$3.37</div>
+                </div>
+                <div class="history-item">
+                    <div>
+                        <div class="history-date">2 days ago</div>
+                    </div>
+                    <div class="history-price trend-down">$3.35</div>
+                </div>
+                <div class="history-item">
+                    <div>
+                        <div class="history-date">3 days ago</div>
+                    </div>
+                    <div class="history-price">$3.41</div>
+                </div>
+                <div class="history-item">
+                    <div>
+                        <div class="history-date">4 days ago</div>
+                    </div>
+                    <div class="history-price trend-up">$3.44</div>
+                </div>
+            </div>
+        </div>
+
+        <div style="height: 80px;"></div>
+
+        <div class="bottom-nav">
+            <div class="nav-item active">
+                <div class="nav-icon">📊</div>
+                <span>Analytics</span>
+            </div>
+            <div class="nav-item">
+                <div class="nav-icon">📍</div>
+                <span>Nearby</span>
+            </div>
+            <div class="nav-item">
+                <div class="nav-icon">🔔</div>
+                <span>Alerts</span>
+            </div>
+            <div class="nav-item">
+                <div class="nav-icon">⚙️</div>
+                <span>Settings</span>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Initialize chart
+        const ctx = document.getElementById('priceChart').getContext('2d');
+        const priceChart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug'],
+                datasets: [{
+                    label: 'Gas Price',
+                    data: [3.25, 3.31, 3.28, 3.45, 3.52, 3.38, 3.35, 3.42],
+                    borderColor: '#4f46e5',
+                    backgroundColor: 'rgba(79, 70, 229, 0.1)',
+                    borderWidth: 3,
+                    fill: true,
+                    tension: 0.4,
+                    pointBackgroundColor: '#4f46e5',
+                    pointBorderColor: '#fff',
+                    pointBorderWidth: 2,
+                    pointRadius: 6
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: {
+                        display: false
+                    }
+                },
+                scales: {
+                    y: {
+                        beginAtZero: false,
+                        min: 3.0,
+                        max: 3.6,
+                        grid: {
+                            color: 'rgba(0,0,0,0.05)'
+                        },
+                        ticks: {
+                            callback: function(value) {
+                                return '$' + value.toFixed(2);
+                            },
+                            font: {
+                                size: 12
+                            },
+                            color: '#6b7280'
+                        }
+                    },
+                    x: {
+                        grid: {
+                            display: false
+                        },
+                        ticks: {
+                            font: {
+                                size: 12
+                            },
+                            color: '#6b7280'
+                        }
+                    }
+                }
+            }
+        });
+
+        // Filter button functionality
+        document.querySelectorAll('.filter-btn').forEach(btn => {
+            btn.addEventListener('click', function() {
+                document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+                this.classList.add('active');
+                
+                // Update chart data based on selection
+                const period = this.textContent;
+                updateChart(period);
+            });
+        });
+
+        function updateChart(period) {
+            // Simulate different data for different periods
+            let newData, newLabels;
+            
+            switch(period) {
+                case '7D':
+                    newLabels = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+                    newData = [3.39, 3.37, 3.35, 3.41, 3.44, 3.37, 3.42];
+                    break;
+                case '90D':
+                    newLabels = ['Jun', 'Jul', 'Aug'];
+                    newData = [3.38, 3.35, 3.42];
+                    break;
+                case '1Y':
+                    newLabels = ['Q1', 'Q2', 'Q3', 'Q4'];
+                    newData = [3.28, 3.45, 3.38, 3.42];
+                    break;
+                case 'MAX':
+                    newLabels = ['2020', '2021', '2022', '2023', '2024'];
+                    newData = [2.85, 3.12, 3.95, 3.28, 3.42];
+                    break;
+                default: // 30D
+                    newLabels = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug'];
+                    newData = [3.25, 3.31, 3.28, 3.45, 3.52, 3.38, 3.35, 3.42];
+            }
+            
+            priceChart.data.labels = newLabels;
+            priceChart.data.datasets[0].data = newData;
+            priceChart.update('active');
+        }
+
+        // Navigation functionality
+        document.querySelectorAll('.nav-item').forEach(item => {
+            item.addEventListener('click', function() {
+                document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+                this.classList.add('active');
+            });
+        });
+
+        // Add smooth scrolling and interactions
+        document.addEventListener('DOMContentLoaded', function() {
+            // Animate stat cards on load
+            const statCards = document.querySelectorAll('.stat-card');
+            statCards.forEach((card, index) => {
+                setTimeout(() => {
+                    card.style.transform = 'translateY(0)';
+                    card.style.opacity = '1';
+                }, index * 100);
+            });
+            
+            // Add loading states for interactive elements
+            document.querySelectorAll('.filter-btn').forEach(btn => {
+                btn.addEventListener('click', function() {
+                    const originalText = this.textContent;
+                    this.innerHTML = '<div class="loading"></div>';
+                    setTimeout(() => {
+                        this.textContent = originalText;
+                    }, 800);
+                });
+            });
+        });
+    </script>
+</body>
+</html>
