@@ -41,7 +41,9 @@ Future<void> _updateApprovalStatusAndNotify({
       // 2) Send EmailJS email to owner notifying them
       final subject = status == 'approved'
           ? 'FuelGo Registration APPROVED - Welcome to FuelGo!'
-          : 'FuelGo Registration - Document Review Required';
+          : status == 'rejected'
+              ? 'FuelGo Registration REJECTED'
+              : 'FuelGo Registration - Document Review Required';
 
       final message = status == 'approved'
           ? '''
@@ -64,7 +66,28 @@ Future<void> _updateApprovalStatusAndNotify({
 The FuelGo Team<br/>
 FuelGo System Admin</p>
 '''
-          : '''
+          : status == 'rejected'
+              ? '''
+<p>Dear ${ownerName},</p>
+<p>We regret to inform you that your gas station registration has been <strong>REJECTED</strong>.</p>
+<br>
+<p><strong>Registration Details:</strong></p>
+<ul>
+<li>Name: ${ownerName}</li>
+<li>Station: ${stationName}</li>
+<li>Status: REJECTED</li>
+</ul>
+<br>
+<p><strong>Reason for Rejection:</strong></p>
+<p>${reason ?? 'No specific reason provided.'}</p>
+<br>
+<p>If you believe this decision was made in error or if you have additional information to provide, please reply to this email with your concerns.</p>
+<br>
+<p>Best regards,<br/>
+The FuelGo Team<br/>
+FuelGo System Admin</p>
+'''
+              : '''
 <p>Dear ${ownerName},</p>
 <p>Your registration requires document review.</p>
 <br>
@@ -90,11 +113,15 @@ The FuelGo Team</p>
       );
 
       if (mounted) {
-        final statusText = status == 'approved' ? 'approved' : 'marked for resubmission';
+        final statusText = status == 'approved' 
+            ? 'approved' 
+            : status == 'rejected' 
+                ? 'rejected' 
+                : 'marked for resubmission';
         if (ok) {
           ScaffoldMessenger.of(context).showSnackBar(SnackBar(
             content: Text('User $statusText and owner notified via email.'),
-            backgroundColor: Colors.green,
+            backgroundColor: status == 'rejected' ? Colors.red : Colors.green,
           ));
         } else {
           ScaffoldMessenger.of(context).showSnackBar(SnackBar(
@@ -192,6 +219,64 @@ The FuelGo Team</p>
     );
   }
 
+  void _showRejectDialog(String userId, String email, String name, String stationName) {
+    final TextEditingController reasonCtrl = TextEditingController();
+    showDialog(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Reject Registration'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text('Reject the registration for $name\'s station: $stationName'),
+            const SizedBox(height: 12),
+            const Text('Provide a reason (required):'),
+            const SizedBox(height: 8),
+            TextField(
+              controller: reasonCtrl, 
+              maxLines: 3, 
+              decoration: const InputDecoration(
+                border: OutlineInputBorder(),
+                hintText: 'e.g., Invalid documents, fraudulent information, does not meet requirements...'
+              )
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context), 
+            child: const Text('Cancel')
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+            onPressed: () {
+              final reason = reasonCtrl.text.trim();
+              if (reason.isEmpty) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('Please provide a reason for rejection'),
+                    backgroundColor: Colors.red,
+                  ),
+                );
+                return;
+              }
+              Navigator.pop(context);
+              _updateApprovalStatusAndNotify(
+                userId: userId,
+                ownerEmail: email,
+                ownerName: name,
+                stationName: stationName,
+                status: 'rejected',
+                reason: reason,
+              );
+            },
+            child: const Text('Reject', style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -283,8 +368,18 @@ The FuelGo Team</p>
                               foregroundColor: Colors.white,
                             ),
                             icon: const Icon(Icons.assignment_return, size: 18),
-                            label: const Text('Request Resubmission'),
+                            label: const Text('Resubmit'),
                             onPressed: () => _showRequestSubmissionDialog(userId, email, name, stationName),
+                          ),
+                          const SizedBox(width: 8),
+                          ElevatedButton.icon(
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.red,
+                              foregroundColor: Colors.white,
+                            ),
+                            icon: const Icon(Icons.cancel, size: 18),
+                            label: const Text('Reject'),
+                            onPressed: () => _showRejectDialog(userId, email, name, stationName),
                           ),
                         ],
                       ),

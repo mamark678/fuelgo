@@ -164,21 +164,24 @@ Future<Map<String, dynamic>?> signInWithGoogleAsOwner() async {
         final role = userData['role'] as String? ?? '';
         final approvalStatus = userData['approvalStatus'] as String?;
 
-        if (role == 'owner') {
-          if (approvalStatus == 'approved' || approvalStatus == 'request_submission') {
-            await firebaseUser.updateDisplayName('owner');
-            return {
-              'user': firebaseUser,
-              'isNewUser': false,
-            };
-          } else if (approvalStatus == 'pending') {
-            await _auth.signOut();
-            throw Exception('Your owner account is pending admin approval. Please wait for approval before signing in.');
-          } else {
-            await _auth.signOut();
-            throw Exception('Your owner account has not been approved. Please contact admin.');
-          }
-        } else {
+            if (role == 'owner') {
+              if (approvalStatus == 'approved' || approvalStatus == 'request_submission') {
+                await firebaseUser.updateDisplayName('owner');
+                return {
+                  'user': firebaseUser,
+                  'isNewUser': false,
+                };
+              } else if (approvalStatus == 'pending') {
+                await _auth.signOut();
+                throw Exception('Your owner account is pending admin approval. Please wait for approval before signing in.');
+              } else if (approvalStatus == 'rejected') {
+                await _auth.signOut();
+                throw Exception('Your owner account has been rejected. Please contact admin for more information.');
+              } else {
+                await _auth.signOut();
+                throw Exception('Your owner account has not been approved. Please contact admin.');
+              }
+            } else {
           await firebaseUser.updateDisplayName('customer');
           await _auth.signOut();
           throw Exception('Access denied. This Google account is not registered as a gas station owner.');
@@ -259,6 +262,9 @@ Future<Map<String, dynamic>?> signInWithGoogleAsOwner() async {
               } else if (approvalStatus == 'pending' && emailNotificationSent) {
                 await _auth.signOut();
                 throw Exception('Your owner account is pending admin approval. Please check your email for updates and wait for approval notification.');
+              } else if (approvalStatus == 'rejected') {
+                await _auth.signOut();
+                throw Exception('Your owner account has been rejected. Please contact admin for more information.');
               } else {
                 await _auth.signOut();
                 throw Exception('Your owner account has not been approved. Please contact admin.');
@@ -420,6 +426,9 @@ Future<User?> completeGoogleOwnerAfterVerification({
       } else if (approvalStatus == 'pending' && emailNotificationSent) {
         await signOut();
         throw Exception('Your owner account is pending admin approval. Please check your email for updates and wait for approval notification.');
+      } else if (approvalStatus == 'rejected') {
+        await signOut();
+        throw Exception('Your owner account has been rejected. Please contact admin for more information.');
       } else {
         await signOut();
         throw Exception('Your owner account has not been approved. Please contact admin for assistance.');

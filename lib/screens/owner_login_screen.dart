@@ -111,6 +111,8 @@ class _OwnerLoginScreenState extends State<OwnerLoginScreen> with RouteAware {
         errorMsg = 'Incorrect password. Please try again.';
       } else if (errorStr.contains('Access denied')) {
         errorMsg = 'Access denied. This account is not registered as a gas station owner.';
+      } else if (errorStr.contains('has been rejected')) {
+        errorMsg = 'Your owner account has been rejected. Please contact admin for more information.';
       }
       setState(() {
         _error = errorMsg;
@@ -242,6 +244,9 @@ class _OwnerLoginScreenState extends State<OwnerLoginScreen> with RouteAware {
       } else if (errorStr.contains('pending admin approval')) {
         errorMsg = 'Your owner account is pending admin approval. Please wait for approval before signing in.';
         _debugLog('🎯 Matched: Pending approval error');
+      } else if (errorStr.contains('has been rejected')) {
+        errorMsg = 'Your owner account has been rejected. Please contact admin for more information.';
+        _debugLog('🎯 Matched: Rejected account error');
       } else if (errorStr.contains('not been approved')) {
         errorMsg = 'Your owner account has not been approved. Please contact admin for assistance.';
         _debugLog('🎯 Matched: Not approved error');
