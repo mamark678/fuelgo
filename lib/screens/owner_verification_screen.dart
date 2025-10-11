@@ -108,153 +108,105 @@ class _OwnerVerificationScreenState extends State<OwnerVerificationScreen> {
       return;
     }
 
-    // Step 1: check Firestore for existing user document with this email
-    final existingQuery = await FirebaseFirestore.instance
-        .collection('users')
-        .where('email', isEqualTo: email)
-        .limit(1)
-        .get();
-
-    if (existingQuery.docs.isNotEmpty) {
-      final doc = existingQuery.docs.first;
-      final data = doc.data();
-      final role = data['role'] as String? ?? '';
-      final approvalStatus = data['approvalStatus'] as String? ?? '';
-
-      // If user exists and is owner & approved -> try signing in with Google credential
-      if (role == 'owner') {
-        if (approvalStatus == 'approved' || approvalStatus == 'pending') {
-          try {
-            // Attempt to sign in with the Google credential
-            final userCredential = await FirebaseAuth.instance.signInWithCredential(credential);
-            final firebaseUser = userCredential.user;
-            if (firebaseUser != null) {
-              // update Firestore user doc if necessary
-              await FirebaseFirestore.instance
-                  .collection('users')
-                  .doc(doc.id)
-                  .set({
-                'authProvider': FieldValue.arrayUnion(['google']),
-                'photoURL': widget.photoURL ?? data['photoURL'],
-                'linkedProviders': FieldValue.arrayUnion(['google.com']),
-              }, SetOptions(merge: true));
-
-              // Navigate to next screen depending on state
-              final documentsSubmitted = data['documentsSubmitted'] as bool? ?? false;
-              if (data['approvalStatus'] == 'approved' && documentsSubmitted) {
-                Navigator.pushReplacementNamed(context, '/owner-dashboard');
-              } else {
-                Navigator.pushReplacementNamed(context, '/owner-document-upload', arguments: {
-                  'userId': firebaseUser.uid,
-                  'name': widget.name,
-                  'email': widget.email,
-                });
-              }
-              return;
-            }
-          } on FirebaseAuthException catch (fae) {
-            // Common case: account exists with different credential
-            if (fae.code == 'account-exists-with-different-credential' ||
-                fae.code == 'email-already-in-use') {
-              // Find existing sign-in methods
-              final methods = await FirebaseAuth.instance.fetchSignInMethodsForEmail(email);
-              if (methods.contains('password')) {
-                // Helpful fallback: offer to send reset so user can sign in and link.
-                await FirebaseAuth.instance.sendPasswordResetEmail(email: email);
-                setState(() {
-                  _error =
-                      'An account with this email exists (email/password). We sent a password reset to $email — sign in with your email and then link Google from Account Settings.';
-                });
-                return;
-              } else {
-                // Other providers (facebook, etc.) — guide the user
-                setState(() {
-                  _error =
-                      'This email is already registered using another sign-in method (${methods.join(', ')}). Please sign in with that provider and link Google from your account settings.';
-                });
-                return;
-              }
-            } else {
-              // Other auth errors — show message
-              setState(() {
-                _error = 'Google sign-in failed: ${fae.message ?? fae.code}';
-              });
-              return;
-            }
-          } catch (e) {
-            setState(() {
-              _error = 'Failed to sign in with Google: ${e.toString()}';
-            });
-            return;
-          }
-        } else {
-          // Exists but not approved
+    // Step 1: Try to sign in with Google credential (no Firestore queries yet)
+    UserCredential userCredential;
+    try {
+      userCredential = await FirebaseAuth.instance.signInWithCredential(credential);
+    } on FirebaseAuthException catch (fae) {
+      if (fae.code == 'account-exists-with-different-credential' || fae.code == 'email-already-in-use') {
+        // Determine existing sign-in methods and guide the user
+        final methods = await FirebaseAuth.instance.fetchSignInMethodsForEmail(email);
+        if (methods.contains('password')) {
+          await FirebaseAuth.instance.sendPasswordResetEmail(email: email);
           setState(() {
-            _error =
-                'An owner account for this email exists but is not approved yet. Please wait for admin approval or contact support.';
+            _error = 'An account with this email exists (email/password). We sent a password reset to $email — sign in with your email and then link Google from Account Settings.';
+          });
+          return;
+        } else {
+          setState(() {
+            _error = 'This email is already registered using another sign-in method (${methods.join(', ')}). Please sign in with that provider and link Google from your account settings.';
           });
           return;
         }
-      } else {
-        // Email exists but not an owner (maybe a customer) — block or explain
-        setState(() {
-          _error =
-              'This email is already registered but not as a gas station owner. If you believe this is a mistake, contact support.';
-        });
-        return;
       }
-    }
-
-    // Step 2: No existing Firestore user -> create account directly with Google
-    try {
-      final user = await AuthService().completeGoogleOwnerAfterVerification(
-        name: widget.name,
-        email: widget.email,
-        photoURL: widget.photoURL,
-        credential: credential,
-      );
-
-      if (user != null) {
-        // Navigate to document upload
-        Navigator.pushReplacementNamed(context, '/owner-document-upload', arguments: {
-          'userId': user.uid,
-          'name': widget.name,
-          'email': widget.email,
-        });
-      } else {
-        throw Exception('Failed to create user account');
-      }
-    } on FirebaseAuthException catch (fae) {
-      if (fae.code == 'account-exists-with-different-credential') {
-        // Send password reset
-        await FirebaseAuth.instance.sendPasswordResetEmail(email: widget.email);
-        setState(() {
-          _error = 'An account with this email exists (email/password). We sent a password reset to ${widget.email} — sign in with your email and then link Google from Account Settings.';
-        });
-        return;
-      } else {
-        setState(() {
-          _error = 'Google sign-in failed: ${fae.message ?? fae.code}';
-        });
-        return;
-      }
-    } catch (e) {
       setState(() {
-        _error = 'Failed to create account. Please try again. Error: ${e.toString()}';
+        _error = 'Google sign-in failed: ${fae.message ?? fae.code}';
       });
+      return;
     }
+
+    final firebaseUser = userCredential.user;
+    if (firebaseUser == null) {
+      setState(() {
+        _error = 'Failed to complete Google sign-in.';
+      });
+      return;
+    }
+
+    // Step 2: Now authenticated, read ONLY own user document
+    final currentUserId = firebaseUser.uid;
+    final userDocRef = FirebaseFirestore.instance.collection('users').doc(currentUserId);
+    final userDoc = await userDocRef.get();
+
+    if (userDoc.exists) {
+      final data = userDoc.data() as Map<String, dynamic>;
+      final role = data['role'] as String? ?? '';
+      final approvalStatus = data['approvalStatus'] as String? ?? '';
+
+      // Ensure Google provider info is reflected
+      await userDocRef.set({
+        'authProvider': FieldValue.arrayUnion(['google']),
+        'photoURL': widget.photoURL ?? data['photoURL'],
+        'linkedProviders': FieldValue.arrayUnion(['google.com']),
+      }, SetOptions(merge: true));
+
+      final documentsSubmitted = data['documentsSubmitted'] as bool? ?? false;
+
+      if (role == 'owner') {
+        if (approvalStatus == 'approved' && documentsSubmitted) {
+          Navigator.pushReplacementNamed(context, '/owner-dashboard');
+        } else {
+          Navigator.pushReplacementNamed(context, '/owner-document-upload', arguments: {
+            'userId': currentUserId,
+            'name': widget.name,
+            'email': widget.email,
+          });
+        }
+        return;
+      } else {
+        // Not an owner
+        await FirebaseAuth.instance.signOut();
+        setState(() {
+          _error = 'This email is already registered but not as a gas station owner. If you believe this is a mistake, contact support.';
+        });
+        return;
+      }
+    }
+
+    // Step 3: No Firestore user doc yet — create owner profile (allowed by rules for self)
+    await userDocRef.set({
+      'email': widget.email,
+      'name': widget.name,
+      'photoURL': widget.photoURL,
+      'role': 'owner',
+      'authProvider': 'google',
+      'emailVerified': true,
+      'approvalStatus': 'pending',
+      'pendingDocuments': true,
+      'createdAt': FieldValue.serverTimestamp(),
+    });
+
+    // Navigate to document upload
+    Navigator.pushReplacementNamed(context, '/owner-document-upload', arguments: {
+      'userId': currentUserId,
+      'name': widget.name,
+      'email': widget.email,
+    });
   } catch (e) {
     print('Error creating Google owner account for verification: $e');
-    if (e.toString().contains('email-already-in-use')) {
-      // rather than a generic message, we handle it above — but keep fallback
-      setState(() {
-        _error = 'This email is already registered. Please try signing in instead.';
-      });
-    } else {
-      setState(() {
-        _error = 'Failed to create account. Please try again. Error: ${e.toString()}';
-      });
-    }
+    setState(() {
+      _error = 'Failed to create account. Please try again. Error: ${e.toString()}';
+    });
   } finally {
     setState(() => _isLoading = false);
   }
