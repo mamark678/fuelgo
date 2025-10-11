@@ -296,10 +296,9 @@ Future<Map<String, dynamic>?> signInWithGoogleAsOwner() async {
         }
       }
     } on FirebaseAuthException catch (authError) {
-      // Sign-in failed - check if it's because user doesn't exist
-      if (authError.code == 'user-not-found' || 
-          authError.code == 'account-exists-with-different-credential') {
-        // This is a new user - return data for verification flow
+      // Sign-in failed - handle cases explicitly
+      if (authError.code == 'user-not-found') {
+        // Treat as brand new owner using Google — send to verification flow
         await _auth.signOut();
         await _googleSignIn.signOut();
 
@@ -315,6 +314,25 @@ Future<Map<String, dynamic>?> signInWithGoogleAsOwner() async {
           'userData': userData,
           'credential': credential,
         };
+      } else if (authError.code == 'account-exists-with-different-credential' ||
+                 authError.code == 'email-already-in-use') {
+        // The email already has a different provider (likely password). Do NOT
+        // route to verification; instruct user to sign in with the existing method.
+        try {
+          final methods = await _auth.fetchSignInMethodsForEmail(email);
+          await _auth.signOut();
+          await _googleSignIn.signOut();
+
+          if (methods.contains('password')) {
+            throw Exception('An account with this email already exists with email/password. Please sign in with your email and password, then link Google from Account Settings.');
+          } else {
+            throw Exception('An account with this email already exists using a different sign-in method (${methods.join(', ')}). Please sign in with that provider and link Google from Account Settings.');
+          }
+        } catch (_) {
+          await _auth.signOut();
+          await _googleSignIn.signOut();
+          rethrow;
+        }
       } else {
         // Other auth errors - rethrow
         await _auth.signOut();
