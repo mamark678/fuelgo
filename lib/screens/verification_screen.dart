@@ -59,51 +59,54 @@ class _VerificationScreenState extends State<VerificationScreen> {
   }
 
   Future<void> _createGoogleAccountWithVerification() async {
-  try {
-    // 🔹 Step 1: Check if the email already exists in Firestore
-    final existing = await FirebaseFirestore.instance
-        .collection('users')
-        .where('email', isEqualTo: widget.email)
-        .limit(1)
-        .get();
+    try {
+      // Step 1: Use Auth to check existing providers. Avoid Firestore email queries (blocked by rules).
+      final methods = await FirebaseAuth.instance.fetchSignInMethodsForEmail(widget.email);
 
-    if (existing.docs.isNotEmpty) {
-      // Already registered, stop here
+      if (methods.isNotEmpty) {
+        String suggestion = 'This email is already registered.';
+        if (methods.contains('google.com')) {
+          suggestion = 'This email is already registered with Google. Please sign in with Google or reset your password.';
+        } else if (methods.contains('password')) {
+          suggestion = 'This email is already registered. Please login or use "Forgot Password".';
+        } else {
+          suggestion = 'This email is already registered with another sign-in method: ${methods.join(', ')}';
+        }
+        setState(() {
+          _error = suggestion;
+        });
+        return;
+      }
+
+      // Step 2: Only create if not existing (keep existing behavior)
+      final tempPassword = 'TempPass123!${DateTime.now().millisecondsSinceEpoch}';
+
+      final user = await AuthService().signUpOwner(
+        email: widget.email,
+        password: tempPassword,
+        name: widget.name,
+        extraData: {
+          'authProvider': 'google',
+          'photoURL': widget.photoURL,
+          'googleCredential': true,
+          'tempPasswordUsed': true,
+          'pendingDocuments': true, // Flag to indicate documents are needed
+        },
+      );
+
+      if (user != null) {
+        print('Google owner account created with temporary password for: ${widget.email}');
+        print('Verification email should have been sent automatically by signUpOwner method');
+      } else {
+        throw Exception('Failed to create user account');
+      }
+    } catch (e) {
+      print('Error creating Google owner account for verification: $e');
       setState(() {
-        _error = 'This email is already registered. Please try signing in instead.';
+        _error = 'Failed to create account. Please try again. Error: ${e.toString()}';
       });
-      return;
     }
-
-    // 🔹 Step 2: Only create if not existing
-    final tempPassword = 'TempPass123!${DateTime.now().millisecondsSinceEpoch}';
-
-    final user = await AuthService().signUpOwner(
-      email: widget.email,
-      password: tempPassword,
-      name: widget.name,
-      extraData: {
-        'authProvider': 'google',
-        'photoURL': widget.photoURL,
-        'googleCredential': true,
-        'tempPasswordUsed': true,
-        'pendingDocuments': true, // Flag to indicate documents are needed
-      },
-    );
-
-    if (user != null) {
-      print('Google owner account created with temporary password for: ${widget.email}');
-      print('Verification email should have been sent automatically by signUpOwner method');
-    } else {
-      throw Exception('Failed to create user account');
-    }
-  } catch (e) {
-    print('Error creating Google owner account for verification: $e');
-    setState(() {
-      _error = 'Failed to create account. Please try again. Error: ${e.toString()}';
-    });
   }
-}
 
 
   Future<void> _checkEmailVerified() async {
