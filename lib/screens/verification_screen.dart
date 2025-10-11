@@ -60,15 +60,9 @@ class _VerificationScreenState extends State<VerificationScreen> {
 
   Future<void> _createGoogleAccountWithVerification() async {
   try {
-    // 🔹 Step 1: Check if the email already exists in Firestore
-    final existing = await FirebaseFirestore.instance
-        .collection('users')
-        .where('email', isEqualTo: widget.email)
-        .limit(1)
-        .get();
-
-    if (existing.docs.isNotEmpty) {
-      // Already registered, stop here
+    // 🔹 Step 1: Check if the email already exists in Firebase Auth (no Firestore read)
+    final methods = await FirebaseAuth.instance.fetchSignInMethodsForEmail(widget.email);
+    if (methods.isNotEmpty) {
       setState(() {
         _error = 'This email is already registered. Please try signing in instead.';
       });
