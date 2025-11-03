@@ -35,23 +35,27 @@ class _OwnerVerificationScreenState extends State<OwnerVerificationScreen> {
   @override
   void initState() {
     super.initState();
-    _initializeAccount();
-  }
-
-  Future<void> _initializeAccount() async {
+    // Auto-initialize account for Google users
     if (widget.isGoogleUser && widget.credential != null) {
-      // For Google users, create the account with email verification
-      await _createGoogleAccountWithVerification();
+      // For Google users, create the account (Google emails are already verified)
+      // Small delay to show the verification screen message
+      Future.delayed(const Duration(milliseconds: 500), () {
+        _createGoogleAccountWithVerification();
+      });
     } else if (!widget.isGoogleUser) {
       // For email users, verification email was already sent in signup
-      final currentUser = FirebaseAuth.instance.currentUser;
-      if (currentUser != null && !currentUser.emailVerified) {
-        try {
-          await AuthService().sendEmailVerification();
-          print('Verification email sent to existing user: ${currentUser.email}');
-        } catch (e) {
-          print('Error sending verification to existing user: $e');
-        }
+      _initializeEmailVerification();
+    }
+  }
+
+  Future<void> _initializeEmailVerification() async {
+    final currentUser = FirebaseAuth.instance.currentUser;
+    if (currentUser != null && !currentUser.emailVerified) {
+      try {
+        await AuthService().sendEmailVerification();
+        print('Verification email sent to existing user: ${currentUser.email}');
+      } catch (e) {
+        print('Error sending verification to existing user: $e');
       }
     }
   }
@@ -108,104 +112,139 @@ class _OwnerVerificationScreenState extends State<OwnerVerificationScreen> {
       return;
     }
 
-    // Step 1: check Firestore for existing user document with this email
-    final existingQuery = await FirebaseFirestore.instance
-        .collection('users')
-        .where('email', isEqualTo: email)
-        .limit(1)
-        .get();
+    // Step 1: Sign in with Google credential first to get authenticated user
+    try {
+      final userCredential = await FirebaseAuth.instance.signInWithCredential(credential);
+      final firebaseUser = userCredential.user;
+      
+      if (firebaseUser == null) {
+        setState(() {
+          _error = 'Failed to authenticate with Google.';
+        });
+        return;
+      }
 
-    if (existingQuery.docs.isNotEmpty) {
-      final doc = existingQuery.docs.first;
-      final data = doc.data();
-      final role = data['role'] as String? ?? '';
-      final approvalStatus = data['approvalStatus'] as String? ?? '';
+      // Step 2: Now check Firestore for existing user document (can use authenticated UID)
+      final userDoc = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(firebaseUser.uid)
+          .get();
 
-      // If user exists and is owner & approved -> try signing in with Google credential
-      if (role == 'owner') {
-        if (approvalStatus == 'approved' || approvalStatus == 'pending') {
-          try {
-            // Attempt to sign in with the Google credential
-            final userCredential = await FirebaseAuth.instance.signInWithCredential(credential);
-            final firebaseUser = userCredential.user;
-            if (firebaseUser != null) {
-              // update Firestore user doc if necessary
+      if (userDoc.exists) {
+        final data = userDoc.data()!;
+        final role = data['role'] as String? ?? '';
+        final approvalStatus = data['approvalStatus'] as String? ?? '';
+
+        // If user exists and is owner -> update and route
+        if (role == 'owner') {
+          if (approvalStatus == 'approved' || approvalStatus == 'pending') {
+            try {
+              // Update Firestore user doc using authenticated user's UID (this passes permission check)
               await FirebaseFirestore.instance
                   .collection('users')
-                  .doc(doc.id)
-                  .set({
+                  .doc(firebaseUser.uid)
+                  .update({
                 'authProvider': FieldValue.arrayUnion(['google']),
                 'photoURL': widget.photoURL ?? data['photoURL'],
                 'linkedProviders': FieldValue.arrayUnion(['google.com']),
-              }, SetOptions(merge: true));
+              });
 
               // Navigate to next screen depending on state
               final documentsSubmitted = data['documentsSubmitted'] as bool? ?? false;
-              if (data['approvalStatus'] == 'approved' && documentsSubmitted) {
-                Navigator.pushReplacementNamed(context, '/owner-dashboard');
-              } else {
+              if (mounted) {
+                if (data['approvalStatus'] == 'approved' && documentsSubmitted) {
+                  Navigator.pushReplacementNamed(context, '/owner-dashboard');
+                } else if (!documentsSubmitted) {
+                  Navigator.pushReplacementNamed(context, '/owner-document-upload', arguments: {
+                    'userId': firebaseUser.uid,
+                    'name': widget.name,
+                    'email': widget.email,
+                  });
+                } else {
+                  Navigator.pushReplacementNamed(context, '/owner-waiting-approval');
+                }
+              }
+              return;
+            } catch (e) {
+              setState(() {
+                _error = 'Failed to update account: ${e.toString()}';
+              });
+              return;
+            }
+          } else if (approvalStatus == 'rejected') {
+            // Rejected - show message
+            setState(() {
+              _error = 'Your registration has been rejected. Please contact support or sign up again.';
+            });
+            await FirebaseAuth.instance.signOut();
+            return;
+          } else {
+            // Other status - redirect based on state
+            final documentsSubmitted = data['documentsSubmitted'] as bool? ?? false;
+            if (mounted) {
+              if (!documentsSubmitted) {
                 Navigator.pushReplacementNamed(context, '/owner-document-upload', arguments: {
                   'userId': firebaseUser.uid,
                   'name': widget.name,
                   'email': widget.email,
                 });
-              }
-              return;
-            }
-          } on FirebaseAuthException catch (fae) {
-            // Common case: account exists with different credential
-            if (fae.code == 'account-exists-with-different-credential' ||
-                fae.code == 'email-already-in-use') {
-              // Find existing sign-in methods
-              final methods = await FirebaseAuth.instance.fetchSignInMethodsForEmail(email);
-              if (methods.contains('password')) {
-                // Helpful fallback: offer to send reset so user can sign in and link.
-                await FirebaseAuth.instance.sendPasswordResetEmail(email: email);
-                setState(() {
-                  _error =
-                      'An account with this email exists (email/password). We sent a password reset to $email — sign in with your email and then link Google from Account Settings.';
-                });
-                return;
               } else {
-                // Other providers (facebook, etc.) — guide the user
-                setState(() {
-                  _error =
-                      'This email is already registered using another sign-in method (${methods.join(', ')}). Please sign in with that provider and link Google from your account settings.';
-                });
-                return;
+                Navigator.pushReplacementNamed(context, '/owner-waiting-approval');
               }
-            } else {
-              // Other auth errors — show message
-              setState(() {
-                _error = 'Google sign-in failed: ${fae.message ?? fae.code}';
-              });
-              return;
             }
-          } catch (e) {
-            setState(() {
-              _error = 'Failed to sign in with Google: ${e.toString()}';
-            });
             return;
           }
         } else {
-          // Exists but not approved
+          // Not an owner - sign out and show error
+          await FirebaseAuth.instance.signOut();
           setState(() {
-            _error =
-                'An owner account for this email exists but is not approved yet. Please wait for admin approval or contact support.';
+            _error = 'This account is not registered as a gas station owner. Please contact support.';
           });
           return;
         }
       } else {
-        // Email exists but not an owner (maybe a customer) — block or explain
-        setState(() {
-          _error =
-              'This email is already registered but not as a gas station owner. If you believe this is a mistake, contact support.';
-        });
-        return;
+        // No Firestore document exists for this authenticated user
+        // This might happen if user was just created - proceed to account creation
+        // (Will be handled in the "Step 2" section below)
       }
+    } on FirebaseAuthException catch (fae) {
+      // Handle auth errors
+      if (fae.code == 'account-exists-with-different-credential' ||
+          fae.code == 'email-already-in-use') {
+        final methods = await FirebaseAuth.instance.fetchSignInMethodsForEmail(email);
+        if (methods.contains('password')) {
+          await FirebaseAuth.instance.sendPasswordResetEmail(email: email);
+          setState(() {
+            _error = 'An account with this email exists (email/password). We sent a password reset to $email — sign in with your email and then link Google from Account Settings.';
+          });
+        } else {
+          setState(() {
+            _error = 'This email is already registered using another sign-in method (${methods.join(', ')}). Please sign in with that provider and link Google from your account settings.';
+          });
+        }
+      } else {
+        setState(() {
+          _error = 'Google sign-in failed: ${fae.message ?? fae.code}';
+        });
+      }
+      return;
+    } catch (e) {
+      setState(() {
+        _error = 'Failed to sign in with Google: ${e.toString()}';
+      });
+      return;
     }
 
     // Step 2: No existing Firestore user -> create account directly with Google
+    // Get the authenticated user from Step 1
+    final currentUser = FirebaseAuth.instance.currentUser;
+    if (currentUser == null) {
+      setState(() {
+        _error = 'Authentication failed. Please try again.';
+      });
+      return;
+    }
+
     try {
       final user = await AuthService().completeGoogleOwnerAfterVerification(
         name: widget.name,
@@ -215,12 +254,54 @@ class _OwnerVerificationScreenState extends State<OwnerVerificationScreen> {
       );
 
       if (user != null) {
-        // Navigate to document upload
-        Navigator.pushReplacementNamed(context, '/owner-document-upload', arguments: {
-          'userId': user.uid,
-          'name': widget.name,
-          'email': widget.email,
-        });
+        // Mark email as verified in Firestore
+        await AuthService().markEmailUserAsVerified(user.uid);
+        
+        // Show success dialog requiring user confirmation before proceeding
+        if (mounted) {
+          showDialog(
+            context: context,
+            barrierDismissible: false,
+            builder: (BuildContext context) {
+              return AlertDialog(
+                content: const Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.check_circle, color: Colors.green, size: 48),
+                    SizedBox(height: 16),
+                    Text(
+                      'Account Verified Successfully!',
+                      style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                      textAlign: TextAlign.center,
+                    ),
+                    SizedBox(height: 8),
+                    Text(
+                      'Your owner account has been verified. You can now proceed to upload your required documents.',
+                      textAlign: TextAlign.center,
+                    ),
+                  ],
+                ),
+                actions: [
+                  TextButton(
+                    onPressed: () {
+                      Navigator.of(context).pop();
+                      // Navigate to document upload only after user confirms
+                      Navigator.pushReplacementNamed(context, '/owner-document-upload', arguments: {
+                        'userId': user.uid,
+                        'name': widget.name,
+                        'email': widget.email,
+                        'isGoogleUser': true,
+                        'googleCredential': credential,
+                        'needsPasswordSetup': false, // Google users don't need password setup
+                      });
+                    },
+                    child: const Text('Continue to Document Upload'),
+                  ),
+                ],
+              );
+            },
+          );
+        }
       } else {
         throw Exception('Failed to create user account');
       }
@@ -316,7 +397,13 @@ class _OwnerVerificationScreenState extends State<OwnerVerificationScreen> {
                     Icon(Icons.check_circle, color: Colors.green, size: 48),
                     SizedBox(height: 16),
                     Text(
-                      'Email verified successfully! Please upload your required documents.',
+                      'Email Verified Successfully!',
+                      style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                      textAlign: TextAlign.center,
+                    ),
+                    SizedBox(height: 8),
+                    Text(
+                      'Your owner account has been verified. You can now proceed to upload your required documents for admin approval.',
                       textAlign: TextAlign.center,
                     ),
                   ],
@@ -325,7 +412,7 @@ class _OwnerVerificationScreenState extends State<OwnerVerificationScreen> {
                   TextButton(
                     onPressed: () {
                       Navigator.of(context).pop();
-                      // Navigate to document upload screen
+                      // Navigate to document upload screen only after user confirms verification
                       Navigator.pushReplacementNamed(
                         context, 
                         '/owner-document-upload',
@@ -336,7 +423,7 @@ class _OwnerVerificationScreenState extends State<OwnerVerificationScreen> {
                         },
                       );
                     },
-                    child: const Text('Continue'),
+                    child: const Text('Continue to Document Upload'),
                   ),
                 ],
               );
@@ -437,11 +524,15 @@ class _OwnerVerificationScreenState extends State<OwnerVerificationScreen> {
                 const SizedBox(height: 16),
                 Text(
                   widget.isGoogleUser
-                      ? 'Completing your Google owner account setup. Please wait...'
+                      ? 'Completing your Google owner account setup. Your Google account is already verified. Setting up your account...'
                       : 'Please check your email and click the verification link to verify your owner account.',
                   style: const TextStyle(fontSize: 16, color: Colors.grey),
                   textAlign: TextAlign.center,
                 ),
+                if (widget.isGoogleUser) ...[
+                  const SizedBox(height: 16),
+                  const CircularProgressIndicator(),
+                ],
                 const SizedBox(height: 8),
                 Text(
                   widget.email,
@@ -484,20 +575,28 @@ class _OwnerVerificationScreenState extends State<OwnerVerificationScreen> {
                   ),
                   const SizedBox(height: 16),
                 ],
-                _isLoading
-                    ? const CircularProgressIndicator()
-                    : ElevatedButton(
-                        onPressed: _checkEmailVerified,
-                        style: ElevatedButton.styleFrom(
-                          minimumSize: const Size(double.infinity, 48),
+                // For Google users, show loading indicator (account creation is automatic)
+                // For email users, show verification button
+                if (widget.isGoogleUser)
+                  (_isLoading 
+                      ? const CircularProgressIndicator()
+                      : const SizedBox.shrink())
+                else ...[
+                  _isLoading
+                      ? const CircularProgressIndicator()
+                      : ElevatedButton(
+                          onPressed: _checkEmailVerified,
+                          style: ElevatedButton.styleFrom(
+                            minimumSize: const Size(double.infinity, 48),
+                          ),
+                          child: const Text('I have verified'),
                         ),
-                        child: const Text('I have verified'),
-                      ),
-                const SizedBox(height: 16),
-                TextButton(
-                  onPressed: _isResending ? null : _resendVerificationEmail,
-                  child: _isResending ? const Text('Sending...') : const Text('Resend Verification Email'),
-                ),
+                  const SizedBox(height: 16),
+                  TextButton(
+                    onPressed: _isResending ? null : _resendVerificationEmail,
+                    child: _isResending ? const Text('Sending...') : const Text('Resend Verification Email'),
+                  ),
+                ],
                 const SizedBox(height: 32),
               ],
             ),

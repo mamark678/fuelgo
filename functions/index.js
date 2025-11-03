@@ -206,3 +206,47 @@ exports.handleApproval = functions.https.onRequest(async (req, res) => {
     return res.status(500).send("Server error: " + err.message);
   }
 });
+
+// Cloud Function to delete a Firebase Auth user (admin operation)
+exports.deleteAuthUser = functions.https.onCall(async (data, context) => {
+  try {
+    // Verify the caller is an admin
+    if (!context.auth) {
+      throw new functions.https.HttpsError(
+        "unauthenticated",
+        "User must be authenticated"
+      );
+    }
+
+    const callerUid = context.auth.uid;
+    const callerDoc = await admin.firestore().collection("users").doc(callerUid).get();
+    const callerData = callerDoc.data();
+
+    if (callerData?.role !== "admin") {
+      throw new functions.https.HttpsError(
+        "permission-denied",
+        "Only admins can delete users"
+      );
+    }
+
+    const userIdToDelete = data.userId;
+    if (!userIdToDelete) {
+      throw new functions.https.HttpsError(
+        "invalid-argument",
+        "userId is required"
+      );
+    }
+
+    // Delete the Firebase Auth user using Admin SDK
+    await admin.auth().deleteUser(userIdToDelete);
+    console.log(`Successfully deleted Firebase Auth user: ${userIdToDelete}`);
+
+    return { success: true, message: `User ${userIdToDelete} deleted successfully` };
+  } catch (error) {
+    console.error("Error deleting Auth user:", error);
+    throw new functions.https.HttpsError(
+      "internal",
+      `Failed to delete user: ${error.message}`
+    );
+  }
+});

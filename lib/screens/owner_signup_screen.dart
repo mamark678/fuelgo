@@ -220,9 +220,36 @@ class _OwnerSignupScreenState extends State<OwnerSignupScreen> with RouteAware {
       if (e.code == 'invalid-email') {
         msg = 'Invalid email address.';
       } else if (e.code == 'too-many-requests') {
-        msg = 'Too many attempts. Please try again later.';
+        // If we get too-many-requests during account creation, the account might have been created
+        // Check if we can sign in to verify account exists
+        try {
+          await FirebaseAuth.instance.signInWithEmailAndPassword(
+            email: email,
+            password: password,
+          );
+          // If sign-in succeeds, account was created - navigate to verification
+          await FirebaseAuth.instance.signOut(); // Sign out immediately
+          if (mounted) {
+            Navigator.pushReplacementNamed(
+              context,
+              '/owner-verification',
+              arguments: {
+                'email': email,
+                'password': null,
+                'name': name,
+                'isGoogleUser': false,
+                'photoURL': null,
+                'credential': null,
+              },
+            );
+            return;
+          }
+        } catch (_) {
+          // Sign-in failed, account probably wasn't created
+          msg = 'Too many attempts. Please wait a moment and try again.';
+        }
       } else if (e.code == 'email-already-in-use') {
-        msg = 'This email is already registered.';
+        msg = 'This email is already registered. Please login or use "Forgot Password".';
       } else if (e.code == 'weak-password') {
         msg = 'The password provided is too weak.';
       } else if (e.code == 'operation-not-allowed') {

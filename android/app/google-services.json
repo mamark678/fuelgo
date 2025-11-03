@@ -12,7 +12,20 @@
           "package_name": "com.example.fuelgo"
         }
       },
-      "oauth_client": [],
+      "oauth_client": [
+        {
+          "client_id": "448394998387-ee9nop285mblji6dt62akl3v1a0hrat2.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.example.fuelgo",
+            "certificate_hash": "c2620137e76032e0c448a7bcf4459b3fb87749fe"
+          }
+        },
+        {
+          "client_id": "448394998387-1635moln114qdu4ubu81hf4hmbat78bu.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
       "api_key": [
         {
           "current_key": "AIzaSyCcp8VxTOvF1MHUuAhQex2YzaCnDhTPNhc"
@@ -20,7 +33,12 @@
       ],
       "services": {
         "appinvite_service": {
-          "other_platform_oauth_client": []
+          "other_platform_oauth_client": [
+            {
+              "client_id": "448394998387-1635moln114qdu4ubu81hf4hmbat78bu.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
         }
       }
     }

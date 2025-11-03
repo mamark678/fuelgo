@@ -85,17 +85,147 @@ class _OwnerLoginScreenState extends State<OwnerLoginScreen> with RouteAware {
         _debugLog('🎭 User displayName: ${user.displayName}');
 
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('You Successfully Logged In'),
-              duration: Duration(seconds: 1),
-            ),
-          );
-          await Future.delayed(const Duration(seconds: 1));
-          if (mounted) {
-            _debugLog('🎯 Navigating to owner dashboard');
-            Navigator.pushReplacementNamed(context, '/owner-dashboard');
-            _debugLog('➡️ Navigation pushed: /owner-dashboard');
+          // Check verification status and route accordingly
+          try {
+            final userDoc = await FirebaseFirestore.instance
+                .collection('users')
+                .doc(user.uid)
+                .get();
+            
+            final approvalStatus = userDoc.data()?['approvalStatus'] as String? ?? '';
+            final documentsSubmitted = userDoc.data()?['documentsSubmitted'] as bool? ?? false;
+            final emailVerified = userDoc.data()?['emailVerified'] as bool? ?? false;
+            final authProvider = userDoc.data()?['authProvider'] as String? ?? 'email';
+            
+            _debugLog('📊 User status - approvalStatus: $approvalStatus, documentsSubmitted: $documentsSubmitted, emailVerified: $emailVerified');
+            
+            // Check if verification process is incomplete
+            bool needsVerification = false;
+            String? redirectRoute;
+            Map<String, dynamic>? redirectArgs;
+            
+            // Check if email verification is needed (for email users only)
+            if (authProvider == 'email' && !emailVerified) {
+              needsVerification = true;
+              redirectRoute = '/owner-verification';
+              redirectArgs = {
+                'email': user.email ?? '',
+                'password': null,
+                'name': userDoc.data()?['name'] ?? '',
+                'isGoogleUser': false,
+                'photoURL': null,
+                'credential': null,
+              };
+            }
+            // Check if documents need to be submitted
+            // Only redirect if documents not submitted AND not pending (pending means docs were submitted and waiting)
+            // If approvalStatus is null/empty, they haven't completed signup, so redirect to document upload
+            else if (approvalStatus == null || approvalStatus.isEmpty) {
+              // No approval status means they haven't submitted documents yet
+              needsVerification = true;
+              redirectRoute = '/owner-document-upload';
+              redirectArgs = {
+                'userId': user.uid,
+                'name': userDoc.data()?['name'] ?? '',
+                'email': user.email ?? '',
+              };
+            } else if (!documentsSubmitted && approvalStatus != 'pending') {
+              // Documents not submitted and not pending - they need to submit
+              needsVerification = true;
+              redirectRoute = '/owner-document-upload';
+              redirectArgs = {
+                'userId': user.uid,
+                'name': userDoc.data()?['name'] ?? '',
+                'email': user.email ?? '',
+              };
+            }
+            
+            // Show incomplete verification dialog if needed
+            if (needsVerification && mounted) {
+              _debugLog('⚠️ Incomplete verification detected - showing dialog');
+              showDialog(
+                context: context,
+                barrierDismissible: false,
+                builder: (context) => AlertDialog(
+                  title: const Text('Incomplete Verification'),
+                  content: const Text(
+                    'You haven\'t finished your verification as a gas station owner. Please click here to continue.',
+                    textAlign: TextAlign.center,
+                  ),
+                  actions: [
+                    TextButton(
+                      onPressed: () {
+                        Navigator.of(context).pop();
+                        if (redirectRoute != null) {
+                          Navigator.pushReplacementNamed(context, redirectRoute!, arguments: redirectArgs);
+                        }
+                      },
+                      child: const Text('Continue Verification'),
+                    ),
+                  ],
+                ),
+              );
+              return; // Don't proceed with normal login flow
+            }
+            
+            // Normal routing for complete verification
+            if (approvalStatus == 'rejected') {
+              _debugLog('❌ Owner rejected - redirecting to sign-up');
+              if (mounted) {
+                showDialog(
+                  context: context,
+                  barrierDismissible: false,
+                  builder: (context) => AlertDialog(
+                    title: const Text('Registration Rejected'),
+                    content: Text(
+                      userDoc.data()?['rejectionReason'] != null
+                          ? 'Your registration has been rejected.\n\nReason: ${userDoc.data()?['rejectionReason']}\n\nPlease review your documents and try again by signing up.'
+                          : 'Your registration has been rejected. Please review your documents and try again by signing up.',
+                    ),
+                    actions: [
+                      TextButton(
+                        onPressed: () {
+                          Navigator.of(context).pop();
+                          AuthService().signOut();
+                          Navigator.pushReplacementNamed(context, '/owner-signup');
+                        },
+                        child: const Text('Go to Sign Up'),
+                      ),
+                    ],
+                  ),
+                );
+              }
+            } else if (approvalStatus == 'request_submission' || !documentsSubmitted) {
+              _debugLog('📄 Redirecting to document upload - Status: $approvalStatus');
+              Navigator.pushReplacementNamed(context, '/owner-document-upload', arguments: {
+                'userId': user.uid,
+                'name': userDoc.data()?['name'] ?? '',
+                'email': user.email ?? '',
+              });
+            } else if (approvalStatus == 'approved') {
+              _debugLog('✅ Approved owner - going to dashboard');
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(
+                  content: Text('You Successfully Logged In!'),
+                  backgroundColor: Colors.green,
+                  duration: Duration(seconds: 1),
+                ),
+              );
+              await Future.delayed(const Duration(seconds: 1));
+              if (mounted) {
+                Navigator.pushReplacementNamed(context, '/owner-dashboard');
+              }
+            } else if (approvalStatus == 'pending') {
+              _debugLog('⏳ Owner pending approval - redirecting to waiting screen');
+              Navigator.pushReplacementNamed(context, '/owner-waiting-approval');
+            } else {
+              _debugLog('⚠️ Unexpected approval status: $approvalStatus - treating as pending');
+              Navigator.pushReplacementNamed(context, '/owner-waiting-approval');
+            }
+          } catch (e) {
+            _debugLog('❌ Error checking status: $e');
+            // Fallback - go to waiting screen
+            Navigator.pushReplacementNamed(context, '/owner-waiting-approval');
           }
         }
       }
@@ -106,11 +236,13 @@ class _OwnerLoginScreenState extends State<OwnerLoginScreen> with RouteAware {
       String errorMsg = 'Login failed.';
       final errorStr = e.toString();
       if (errorStr.contains('user-not-found')) {
-        errorMsg = 'No account found for this email.';
+        errorMsg = 'Cannot Access: No account found for this email. Please sign up first.';
       } else if (errorStr.contains('wrong-password')) {
         errorMsg = 'Incorrect password. Please try again.';
       } else if (errorStr.contains('Access denied')) {
         errorMsg = 'Access denied. This account is not registered as a gas station owner.';
+      } else if (errorStr.contains('Cannot Access')) {
+        errorMsg = errorStr;
       }
       setState(() {
         _error = errorMsg;
@@ -175,33 +307,135 @@ class _OwnerLoginScreenState extends State<OwnerLoginScreen> with RouteAware {
             _debugLog('➡️ Navigation pushed: /owner-verification');
           }
         } else {
-  _debugLog('🎉 Existing owner - checking document status');
+  // Existing owner - check approval status and document status
   final user = result['user'] as User?;
   if (user != null && mounted) {
     try {
-      // Check if documents are submitted
+      // Get user document to check both approval status and document status
       final userDoc = await FirebaseFirestore.instance
           .collection('users')
           .doc(user.uid)
           .get();
       
+      final approvalStatus = userDoc.data()?['approvalStatus'] as String? ?? '';
       final documentsSubmitted = userDoc.data()?['documentsSubmitted'] as bool? ?? false;
+      final emailVerified = userDoc.data()?['emailVerified'] as bool? ?? false;
+      final authProvider = userDoc.data()?['authProvider'] as String? ?? 'google';
       
-      if (!documentsSubmitted) {
-        _debugLog('📄 Documents not submitted - redirecting to document upload');
-        // Existing user but documents not submitted
+      _debugLog('📊 User status - approvalStatus: $approvalStatus, documentsSubmitted: $documentsSubmitted, emailVerified: $emailVerified');
+      
+      // Check if verification process is incomplete
+      bool needsVerification = false;
+      String? redirectRoute;
+      Map<String, dynamic>? redirectArgs;
+      
+      // Check if email verification is needed (for email users only)
+      if (authProvider == 'email' && !emailVerified) {
+        needsVerification = true;
+        redirectRoute = '/owner-verification';
+        redirectArgs = {
+          'email': user.email ?? '',
+          'password': null,
+          'name': userDoc.data()?['name'] ?? '',
+          'isGoogleUser': false,
+          'photoURL': null,
+          'credential': null,
+        };
+      }
+      // Check if documents need to be submitted
+      // Only redirect if documents not submitted AND not pending (pending means docs were submitted and waiting)
+      // If approvalStatus is null/empty, they haven't completed signup, so redirect to document upload
+      else if (approvalStatus == null || approvalStatus.isEmpty) {
+        // No approval status means they haven't submitted documents yet
+        needsVerification = true;
+        redirectRoute = '/owner-document-upload';
+        redirectArgs = {
+          'userId': user.uid,
+          'name': userDoc.data()?['name'] ?? '',
+          'email': user.email ?? '',
+        };
+      } else if (!documentsSubmitted && approvalStatus != 'pending') {
+        // Documents not submitted and not pending - they need to submit
+        needsVerification = true;
+        redirectRoute = '/owner-document-upload';
+        redirectArgs = {
+          'userId': user.uid,
+          'name': userDoc.data()?['name'] ?? '',
+          'email': user.email ?? '',
+        };
+      }
+      
+      // Show incomplete verification dialog if needed
+      if (needsVerification && mounted) {
+        _debugLog('⚠️ Incomplete verification detected - showing dialog');
+        showDialog(
+          context: context,
+          barrierDismissible: false,
+          builder: (context) => AlertDialog(
+            title: const Text('Incomplete Verification'),
+            content: const Text(
+              'You haven\'t finished your verification as a gas station owner. Please click here to continue.',
+              textAlign: TextAlign.center,
+            ),
+            actions: [
+              TextButton(
+                onPressed: () {
+                  Navigator.of(context).pop();
+                  if (redirectRoute != null) {
+                    Navigator.pushReplacementNamed(context, redirectRoute!, arguments: redirectArgs);
+                  }
+                },
+                child: const Text('Continue Verification'),
+              ),
+            ],
+          ),
+        );
+        return; // Don't proceed with normal login flow
+      }
+      
+      // Handle different approval statuses
+      if (approvalStatus == 'rejected') {
+        _debugLog('❌ Owner rejected - redirecting to sign-up');
+        // Show rejection message and redirect to sign-up
+        if (mounted) {
+          showDialog(
+            context: context,
+            barrierDismissible: false,
+            builder: (context) => AlertDialog(
+              title: const Text('Registration Rejected'),
+              content: Text(
+                userDoc.data()?['rejectionReason'] != null
+                    ? 'Your registration has been rejected.\n\nReason: ${userDoc.data()?['rejectionReason']}\n\nPlease review your documents and try again by signing up.'
+                    : 'Your registration has been rejected. Please review your documents and try again by signing up.',
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () {
+                    Navigator.of(context).pop();
+                    AuthService().signOut();
+                    Navigator.pushReplacementNamed(context, '/owner-signup');
+                  },
+                  child: const Text('Go to Sign Up'),
+                ),
+              ],
+            ),
+          );
+        }
+      } else if (approvalStatus == 'request_submission' || !documentsSubmitted) {
+        _debugLog('📄 Redirecting to document upload - Status: $approvalStatus');
+        // Owner needs to resubmit documents OR hasn't submitted yet
         Navigator.pushReplacementNamed(context, '/owner-document-upload', arguments: {
           'userId': user.uid,
           'name': userDoc.data()?['name'] ?? '',
           'email': user.email ?? '',
         });
         _debugLog('➡️ Navigation pushed: /owner-document-upload');
-      } else {
-        _debugLog('✅ Documents submitted - going to dashboard');
-        // Normal dashboard flow
+      } else if (approvalStatus == 'approved') {
+        _debugLog('✅ Approved owner - going to dashboard');
+        // Approved owner - go to dashboard
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('Welcome back!'),
+            content: Text('You Successfully Logged In!'),
             backgroundColor: Colors.green,
             duration: Duration(seconds: 1),
           ),
@@ -209,9 +443,18 @@ class _OwnerLoginScreenState extends State<OwnerLoginScreen> with RouteAware {
         await Future.delayed(const Duration(seconds: 1));
         Navigator.pushReplacementNamed(context, '/owner-dashboard');
         _debugLog('➡️ Navigation pushed: /owner-dashboard');
+      } else if (approvalStatus == 'pending') {
+        _debugLog('⏳ Owner pending approval - redirecting to waiting screen');
+        // Owner is waiting for approval
+        Navigator.pushReplacementNamed(context, '/owner-waiting-approval');
+        _debugLog('➡️ Navigation pushed: /owner-waiting-approval');
+      } else {
+        _debugLog('⚠️ Unexpected approval status: $approvalStatus');
+        // Fallback for unexpected statuses - treat as pending
+        Navigator.pushReplacementNamed(context, '/owner-waiting-approval');
       }
     } catch (e) {
-      _debugLog('❌ Error checking document status: $e');
+      _debugLog('❌ Error checking status: $e');
       // Fallback to dashboard
       Navigator.pushReplacementNamed(context, '/owner-dashboard');
     }

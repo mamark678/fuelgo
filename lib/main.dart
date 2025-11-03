@@ -3,22 +3,27 @@ import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
+import 'firebase_options.dart';  // ← ADD THIS LINE
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-import '../screens/owner_verification_screen.dart';
+import 'screens/owner_verification_screen.dart';
 import 'home_screen.dart';
 import 'screens/analytics_screen.dart';
 import 'screens/forgot_password_screen.dart';
 import 'screens/login_screen.dart';
 import 'screens/owner_dashboard_screen.dart';
+import 'screens/admin_approve_screen.dart';
+import 'screens/admin_login_screen.dart';
 import 'screens/owner_document_upload_screen.dart' show OwnerDocumentUploadScreen;
 import 'screens/owner_login_screen.dart';
 import 'screens/owner_signup_screen.dart';
+import 'screens/owner_waiting_approval_screen.dart';
 import 'screens/role_selection_screen.dart';
 import 'screens/signup_screen.dart';
 import 'screens/verification_screen.dart';
+import 'services/auth_service.dart';
 import 'services/email_processor_service.dart';
 import 'services/notification_service.dart';
 
@@ -68,7 +73,9 @@ void main() async {
   debugPrint('==== Fuel-GO! Application Starting ====');
 
   try {
-    await Firebase.initializeApp();
+    await Firebase.initializeApp(
+      options: DefaultFirebaseOptions.currentPlatform,  // ← ADD THIS LINE
+    );
     debugPrint('Firebase initialized successfully');
   } catch (e) {
     debugPrint('Firebase initialization error: $e');
@@ -82,7 +89,6 @@ void main() async {
 
   runApp(const MyApp());
 }
-
 // Move heavy initialization to background to prevent blocking main thread
 void _initializeServicesInBackground() async {
   // Use microtasks to prevent blocking the main thread
@@ -183,17 +189,8 @@ class MyApp extends StatelessWidget {
         ],
       ),
       home: kIsWeb
-          ? Scaffold(
-              appBar: AppBar(title: const Text('Fuel-GO! (Web Preview)')),
-              body: const Center(
-                child: Text(
-                  'Map preview only works on iOS/Android.\n'
-                  'Please run on an emulator/device.',
-                  textAlign: TextAlign.center,
-                ),
-              ),
-            )
-          : const AuthWrapper(),
+          ? const WebAdminWrapper() // Web-only admin portal
+          : const AuthWrapper(), // Mobile app
       routes: {
         '/role-selection': (context) => const StatefulRoleSelectionScreen(),
         '/login': (context) => const StatefulLoginScreen(),
@@ -222,8 +219,130 @@ class MyApp extends StatelessWidget {
         '/owner-document-upload': (context) {
           return const StatefulOwnerDocumentUploadScreen();
         },
+        '/owner-waiting-approval': (context) {
+          return StatefulScreenWrapper(
+            routeName: '/owner-waiting-approval',
+            child: const OwnerWaitingApprovalScreen(),
+          );
+        },
+        // Admin routes (web-only)
+        '/admin-login': (context) {
+          return StatefulScreenWrapper(
+            routeName: '/admin-login',
+            child: const AdminLoginScreen(),
+          );
+        },
+        '/admin-approval': (context) {
+          return StatefulScreenWrapper(
+            routeName: '/admin-approval',
+            child: const AdminApprovalScreen(),
+          );
+        },
       },
     );
+  }
+}
+
+// Web-only wrapper for admin portal
+class WebAdminWrapper extends StatefulWidget {
+  const WebAdminWrapper({Key? key}) : super(key: key);
+
+  @override
+  State<WebAdminWrapper> createState() => _WebAdminWrapperState();
+}
+
+class _WebAdminWrapperState extends State<WebAdminWrapper> {
+  bool _isCheckingAuth = true;
+  Widget? _targetScreen;  // ← ADD THIS LINE (remove _isAdmin, it's not needed anymore)
+
+  @override
+  void initState() {
+    super.initState();
+    _checkAdminAuth();
+  }
+
+  Future<void> _checkAdminAuth() async {
+    try {
+      final user = FirebaseAuth.instance.currentUser;
+      
+      if (user != null) {
+        // Check if user is admin
+        final userDoc = await FirebaseFirestore.instance
+            .collection('users')
+            .doc(user.uid)
+            .get();
+        
+        if (userDoc.exists) {
+          final userData = userDoc.data() as Map<String, dynamic>?;
+          final role = userData?['role'] as String? ?? '';
+          
+          if (role == 'admin') {
+            // User is admin - show approval screen
+            if (mounted) {
+              setState(() {
+                _targetScreen = const AdminApprovalScreen();
+                _isCheckingAuth = false;
+              });
+            }
+            return;
+          }
+        }
+      }
+      
+      // Not admin or not logged in - show admin login
+      if (mounted) {
+        setState(() {
+          _targetScreen = const AdminLoginScreen();
+          _isCheckingAuth = false;
+        });
+      }
+    } catch (e) {
+      debugPrint('Error checking admin auth: $e');
+      if (mounted) {
+        setState(() {
+          _targetScreen = const AdminLoginScreen();
+          _isCheckingAuth = false;
+        });
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_isCheckingAuth) {
+      return Scaffold(
+        body: Center(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              CircularProgressIndicator(
+                valueColor: AlwaysStoppedAnimation<Color>(
+                  Theme.of(context).primaryColor,
+                ),
+              ),
+              const SizedBox(height: 24),
+              const Text(
+                'FuelGo Admin Portal',
+                style: TextStyle(
+                  fontSize: 20,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              const SizedBox(height: 8),
+              const Text(
+                'Loading...',
+                style: TextStyle(
+                  fontSize: 14,
+                  color: Colors.grey,
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    return _targetScreen ?? const AdminLoginScreen();  // ← CHANGE THIS LINE
   }
 }
 
@@ -364,9 +483,81 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
         final userRole = userData['role'] ?? 'customer';
         debugPrint('User role: $userRole');
         
-        return userRole == 'owner' 
-            ? const StatefulOwnerDashboardScreen()
-            : const StatefulHomeScreen();
+        if (userRole == 'owner') {
+          // Check approval status for owners
+          final approvalStatus = userData['approvalStatus'] as String? ?? '';
+          final documentsSubmitted = userData['documentsSubmitted'] as bool? ?? false;
+          final emailVerified = userData['emailVerified'] as bool? ?? false;
+          final authProvider = userData['authProvider'] as String? ?? 'email';
+          
+          debugPrint('Owner status - approvalStatus: $approvalStatus, documentsSubmitted: $documentsSubmitted, emailVerified: $emailVerified');
+          
+          // Check if verification process is incomplete
+          if (authProvider == 'email' && !emailVerified) {
+            debugPrint('Owner needs email verification - routing to verification screen');
+            return StatefulScreenWrapper(
+              routeName: '/owner-verification',
+              child: OwnerVerificationScreen(
+                email: user.email ?? '',
+                password: null,
+                name: userData['name'] as String? ?? '',
+                photoURL: null,
+                isGoogleUser: false,
+                credential: null,
+              ),
+            );
+          }
+          
+          // Check if documents need to be submitted
+          if (!documentsSubmitted) {
+            debugPrint('Owner needs to submit documents - routing to document upload');
+            return StatefulScreenWrapper(
+              routeName: '/owner-document-upload',
+              child: OwnerDocumentUploadScreen(
+                userId: user.uid,
+                name: userData['name'] as String? ?? '',
+                email: user.email ?? '',
+              ),
+            );
+          }
+          
+          // Check approval status
+          if (approvalStatus == 'approved') {
+            debugPrint('Owner approved - routing to dashboard');
+            return const StatefulOwnerDashboardScreen();
+          } else if (approvalStatus == 'pending') {
+            debugPrint('Owner pending approval - routing to waiting screen');
+            return StatefulScreenWrapper(
+              routeName: '/owner-waiting-approval',
+              child: const OwnerWaitingApprovalScreen(),
+            );
+          } else if (approvalStatus == 'request_submission') {
+            debugPrint('Owner needs to resubmit documents - routing to document upload');
+            return StatefulScreenWrapper(
+              routeName: '/owner-document-upload',
+              child: OwnerDocumentUploadScreen(
+                userId: user.uid,
+                name: userData['name'] as String? ?? '',
+                email: user.email ?? '',
+              ),
+            );
+          } else if (approvalStatus == 'rejected') {
+            debugPrint('Owner rejected - routing to login');
+            // Sign out and send to login
+            await AuthService().signOut();
+            return const StatefulOwnerLoginScreen();
+          } else {
+            // Fallback for unknown status - treat as pending
+            debugPrint('Unknown approval status - treating as pending');
+            return StatefulScreenWrapper(
+              routeName: '/owner-waiting-approval',
+              child: const OwnerWaitingApprovalScreen(),
+            );
+          }
+        } else {
+          // Customer role - go to home
+          return const StatefulHomeScreen();
+        }
       } else {
         debugPrint('User doc not found - defaulting to home');
         return const StatefulHomeScreen();

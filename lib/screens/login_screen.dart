@@ -119,6 +119,12 @@ class _LoginScreenState extends State<LoginScreen> with RouteAware {
         errorMsg = 'No account found for this email.';
       } else if (errorStr.contains('wrong-password')) {
         errorMsg = 'Incorrect password. Please try again.';
+      } else if (errorStr.contains('Access denied')) {
+        errorMsg = errorStr.contains('gas station owner')
+            ? 'This account is registered as a gas station owner. Please use the Owner Login instead.'
+            : 'Access denied. Please check your account type.';
+      } else if (errorStr.contains('Exception:')) {
+        errorMsg = errorStr.split('Exception:')[1].trim();
       }
       setState(() {
         _error = errorMsg;
@@ -176,8 +182,23 @@ class _LoginScreenState extends State<LoginScreen> with RouteAware {
         }
       }
     } catch (e) {
+      String errorMsg = 'Google sign-in failed.';
+      final errorStr = e.toString();
+      
+      if (errorStr.contains('Access denied')) {
+        errorMsg = errorStr.contains('gas station owner')
+            ? 'This Google account is registered as a gas station owner. Please use the Owner Login instead.'
+            : 'Access denied. Please check your account type.';
+      } else if (errorStr.contains('network')) {
+        errorMsg = 'Network error. Please check your internet connection and try again.';
+      } else {
+        errorMsg = errorStr.contains('Exception:')
+            ? errorStr.split('Exception:')[1].trim()
+            : 'Google sign-in failed. Please try again.';
+      }
+      
       setState(() {
-        _error = 'Google sign-in failed: ${e.toString()}';
+        _error = errorMsg;
       });
     } finally {
       setState(() {

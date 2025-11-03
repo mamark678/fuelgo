@@ -2,15 +2,16 @@
 import 'dart:io';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_storage/firebase_storage.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:mailer/mailer.dart';
 import 'package:mailer/smtp_server.dart';
-import 'package:firebase_auth/firebase_auth.dart';
-import '../services/auth_service.dart';
 
+import '../services/auth_service.dart';
 import '../services/firestore_service.dart';
 import 'owner_station_map_select_screen.dart';
 
@@ -58,6 +59,47 @@ class _OwnerDocumentUploadScreenState extends State<OwnerDocumentUploadScreen> {
     // Otherwise, start at step 1 (station selection)
     _currentStep = widget.needsPasswordSetup ? 0 : 1;
     _passwordSetupCompleted = !widget.needsPasswordSetup;
+    // Check verification status on screen load
+    _checkVerificationStatus();
+  }
+
+  Future<void> _checkVerificationStatus() async {
+    try {
+      final userDoc = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(widget.userId)
+          .get();
+      
+      final emailVerified = userDoc.data()?['emailVerified'] as bool? ?? false;
+      final authProvider = userDoc.data()?['authProvider'] as String? ?? '';
+      
+      // For email users, require explicit email verification in Firestore
+      // For Google users, emailVerified should be true (set during account creation)
+      if (authProvider == 'email' && !emailVerified) {
+        // User hasn't verified email yet - redirect back to verification
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Please verify your email first before uploading documents.'),
+              backgroundColor: Colors.orange,
+              duration: Duration(seconds: 3),
+            ),
+          );
+          await Future.delayed(const Duration(seconds: 1));
+          Navigator.pushReplacementNamed(context, '/owner-verification', arguments: {
+            'email': widget.email,
+            'password': null,
+            'name': widget.name,
+            'isGoogleUser': false,
+            'photoURL': null,
+            'credential': null,
+          });
+        }
+      }
+    } catch (e) {
+      print('Error checking verification status: $e');
+      // Don't block access on error, but log it
+    }
   }
 
   void _selectStationLocation() async {
@@ -324,6 +366,23 @@ class _OwnerDocumentUploadScreenState extends State<OwnerDocumentUploadScreen> {
     return true;
   }
 
+  Future<String?> _uploadDocumentToStorage(File file, String documentType, String userId) async {
+    try {
+      final storageRef = FirebaseStorage.instance
+          .ref()
+          .child('owner_documents')
+          .child(userId)
+          .child('$documentType.jpg');
+      
+      await storageRef.putFile(file);
+      final downloadUrl = await storageRef.getDownloadURL();
+      return downloadUrl;
+    } catch (e) {
+      print('Error uploading $documentType: $e');
+      return null;
+    }
+  }
+
   Future<void> _createGasStation() async {
     final stationId = 'FG${DateTime.now().year}-${DateTime.now().millisecondsSinceEpoch.toString().substring(7)}';
     
@@ -342,7 +401,12 @@ class _OwnerDocumentUploadScreenState extends State<OwnerDocumentUploadScreen> {
       stationName: _selectedStationName,
     );
 
-    // Update user document with station info
+    // Upload documents to Firebase Storage and get URLs
+    final gasStationIdUrl = await _uploadDocumentToStorage(_gasStationIdImage!, 'gas_station_id', widget.userId);
+    final governmentIdUrl = await _uploadDocumentToStorage(_governmentIdImage!, 'government_id', widget.userId);
+    final businessPermitUrl = await _uploadDocumentToStorage(_businessPermitImage!, 'business_permit', widget.userId);
+
+    // Update user document with station info and document URLs
     await FirebaseFirestore.instance.collection('users').doc(widget.userId).update({
       'stationName': _selectedStationName,
       'stationId': stationId,
@@ -351,6 +415,11 @@ class _OwnerDocumentUploadScreenState extends State<OwnerDocumentUploadScreen> {
       'documentsSubmitted': true,
       'approvalStatus': 'pending',
       'submittedAt': FieldValue.serverTimestamp(),
+      'documentUrls': {
+        'gasStationId': gasStationIdUrl,
+        'governmentId': governmentIdUrl,
+        'businessPermit': businessPermitUrl,
+      },
     });
   }
 
@@ -592,68 +661,75 @@ Reject:  $rejectEndpointUrl
   print('🏁 Email send process completed');
 }
 
-
-
-
   Future<void> _submitDocuments() async {
-    if (!_validateForm()) return;
+  if (!_validateForm()) return;
 
-    setState(() {
-      _isSubmitting = true;
-      _error = null;
-    });
+  setState(() {
+    _isSubmitting = true;
+    _error = null;
+  });
 
-    try {
-      // Create gas station
-      await _createGasStation();
-      
-      // Send email to admin
-      await _sendEmailToAdmin();
-
-      if (mounted) {
-        showDialog(
-          context: context,
-          barrierDismissible: false,
-          builder: (context) => AlertDialog(
-            content: const Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(Icons.check_circle, color: Colors.green, size: 48),
-                SizedBox(height: 16),
-                Text(
-                  'Documents submitted successfully!',
-                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                  textAlign: TextAlign.center,
-                ),
-                SizedBox(height: 8),
-                Text(
-                  'Your registration is now pending admin approval. You will be notified once approved.',
-                  textAlign: TextAlign.center,
-                ),
-              ],
-            ),
-            actions: [
-              TextButton(
-                onPressed: () {
-                  Navigator.of(context).pop();
-                  Navigator.pushReplacementNamed(context, '/owner-login');
-                },
-                child: const Text('Continue to Login'),
+  try {
+    // Step 1: Create gas station
+    await _createGasStation();
+    
+    // Step 2: Send email to admin with documents for review
+    await _sendEmailToAdmin();
+    
+    // Step 3: Show success dialog and redirect to waiting approval screen
+    if (mounted) {
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (context) => AlertDialog(
+          content: const Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.check_circle, color: Colors.green, size: 48),
+              SizedBox(height: 16),
+              Text(
+                'Documents submitted successfully!',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                textAlign: TextAlign.center,
+              ),
+              SizedBox(height: 8),
+              Text(
+                'Your documents have been sent to admin for review. You will be notified once your registration is approved or if resubmission is required.',
+                textAlign: TextAlign.center,
               ),
             ],
           ),
-        );
-      }
-    } catch (e) {
-      setState(() {
-        _error = 'Failed to submit documents: ${e.toString()}';
-      });
-    } finally {
-      setState(() {
-        _isSubmitting = false;
-      });
+          actions: [
+            TextButton(
+              onPressed: () {
+                Navigator.of(context).pop();
+                // Redirect to waiting approval screen
+                Navigator.pushReplacementNamed(context, '/owner-waiting-approval');
+              },
+              child: const Text('Continue'),
+            ),
+          ],
+        ),
+      );
     }
+  } catch (e) {
+    setState(() {
+      _error = 'Failed to submit documents: ${e.toString()}';
+    });
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Error: ${e.toString()}'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+  } finally {
+    setState(() {
+      _isSubmitting = false;
+    });
   }
+}
 
   @override
 Widget build(BuildContext context) {

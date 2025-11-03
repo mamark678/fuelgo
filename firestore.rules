@@ -1,7 +1,6 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-
     // --- Helper functions ---
     function isSignedIn() {
       return request.auth != null;
@@ -11,40 +10,88 @@ service cloud.firestore {
       return isSignedIn() && request.auth.uid == ownerId;
     }
 
-    // --- Users ---
-    // Top-level users documents: authenticated read, only the owner can write.
-    match /users/{userId} {
-      allow read: if isOwner(userId);
+    function isAdmin() {
+      // Check if user is admin - adjust based on your admin check logic
+      return isSignedIn() && 
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('role', '') == 'admin';
+    }
 
-      // create only by the user themself + must contain basic fields
-      allow create: if request.auth != null
+    // --- Users ---
+    match /users/{userId} {
+      // Allow read if:
+      // 1. User is reading their own document
+      // 2. User's email matches the authenticated email (when resource exists)
+      // 3. Querying by email for verification during signup (limited queries for email checks)
+      //    - Allow email existence checks during signup (limit 1, must query by email)
+      // 4. Admin reading any user document
+      allow read: if isOwner(userId)
+        || (isSignedIn() && resource != null && resource.data.email == request.auth.token.email)
+        || (isSignedIn() && 
+            request.query != null && 
+            request.query.limit != null &&
+            request.query.limit <= 1 &&
+            request.query.where != null &&
+            request.query.where.size() >= 1)
+        || // Allow email existence check during signup (even without auth for Google signup)
+           (request.query != null && 
+            request.query.limit != null &&
+            request.query.limit <= 1 &&
+            request.query.where != null &&
+            request.query.where.size() >= 1 &&
+            request.query.where[0].field == 'email')
+        || isAdmin();
+
+      // Create: user creating their own document during signup
+      // Must be authenticated and creating document with their UID
+      // OR creating with their email (for email/password signup flow)
+      allow create: if isSignedIn()
         && request.auth.uid == userId
         && request.resource.data.keys().hasAll(['name', 'email'])
         && request.resource.data.name is string
-        && request.resource.data.email is string;
+        && request.resource.data.email is string
+        && request.resource.data.email == request.auth.token.email;
 
-      allow update, delete: if isOwner(userId);
+      // Update: user can update their own document, admin can update any
+      // Allow users to update specific fields during signup/verification flow
+      allow update: if isOwner(userId)
+        || isAdmin()
+        || (isSignedIn() 
+            && request.auth.uid == userId 
+            && resource != null
+            && (
+              // Allow updating approval-related fields after document submission
+              (request.resource.data.diff(resource.data).affectedKeys().hasAny([
+                  'documentsSubmitted', 'emailVerified', 'photoURL', 
+                  'stationName', 'stationId', 'stationLat', 'stationLng',
+                  'submittedAt', 'verifiedAt', 'authProvider', 'linkedProviders',
+                  'googleLinked', 'tempPasswordUsed', 'pendingDocuments'
+                ]))
+              // OR allow updating entire document during initial signup/verification
+              || (request.resource.data.email == request.auth.token.email)
+            ));
 
-      // User's claimed offers subcollection
-      match /claimed_offers/{claimId} {
-        allow read: if isOwner(userId);
-        allow create: if isOwner(userId)
-          && request.resource.data.offerId is string
-          && request.resource.data.offerId != ''
-          && request.resource.data.claimedAt is timestamp;
-        allow delete: if isOwner(userId);
-      }
+      allow delete: if isOwner(userId) || isAdmin();
 
-      // User's redeemed vouchers subcollection
-      match /redeemed_vouchers/{redeemedId} {
-        allow read: if isOwner(userId);
-        allow create: if isOwner(userId)
-          && request.resource.data.voucherId is string
-          && request.resource.data.voucherId != ''
-          && request.resource.data.redeemedAt is timestamp;
-        allow delete: if isOwner(userId);
-      }
-    }
+  // User's claimed offers subcollection
+  match /claimed_offers/{claimId} {
+    allow read: if isOwner(userId);
+    allow create: if isOwner(userId)
+      && request.resource.data.offerId is string
+      && request.resource.data.offerId != ''
+      && request.resource.data.claimedAt is timestamp;
+    allow delete: if isOwner(userId);
+  }
+
+  // User's redeemed vouchers subcollection
+  match /redeemed_vouchers/{redeemedId} {
+    allow read: if isOwner(userId);
+    allow create: if isOwner(userId)
+      && request.resource.data.voucherId is string
+      && request.resource.data.voucherId != ''
+      && request.resource.data.redeemedAt is timestamp;
+    allow delete: if isOwner(userId);
+  }
+}
 
     // --- Gas stations ---
     match /gas_stations/{stationId} {
@@ -156,5 +203,6 @@ service cloud.firestore {
     match /{document=**} {
       allow read, write: if false;
     }
+  }
   }
 }

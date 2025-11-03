@@ -122,20 +122,33 @@ class _SignupScreenState extends State<SignupScreen> with RouteAware {
     });
 
     try {
-      final methods = await FirebaseAuth.instance.fetchSignInMethodsForEmail(email);
-      if (methods.isNotEmpty) {
-        String suggestion = 'This email is already registered.';
-        if (methods.contains('google.com')) {
-          suggestion = 'This email is already registered with Google. Please sign in with Google or reset your password.';
-        } else if (methods.contains('password')) {
-          suggestion = 'This email is already registered. Please login or use "Forgot Password".';
-        } else {
-          suggestion = 'This email is already registered with another sign-in method: ${methods.join(', ')}';
+      // Pre-check if email exists (non-blocking - if it fails due to rate limits, proceed anyway)
+      try {
+        final methods = await FirebaseAuth.instance.fetchSignInMethodsForEmail(email);
+        if (methods.isNotEmpty) {
+          String suggestion = 'This email is already registered.';
+          if (methods.contains('google.com')) {
+            suggestion = 'This email is already registered with Google. Please sign in with Google or reset your password.';
+          } else if (methods.contains('password')) {
+            suggestion = 'This email is already registered. Please login or use "Forgot Password".';
+          } else {
+            suggestion = 'This email is already registered with another sign-in method: ${methods.join(', ')}';
+          }
+          setState(() {
+            _error = suggestion;
+          });
+          return;
         }
-        setState(() {
-          _error = suggestion;
-        });
-        return;
+      } on FirebaseAuthException catch (e) {
+        // If fetchSignInMethodsForEmail fails due to rate limits, skip the check and proceed
+        // The actual signup will handle duplicate email errors properly
+        if (e.code == 'too-many-requests') {
+          print('Warning: fetchSignInMethodsForEmail rate limited, proceeding with signup anyway');
+          // Continue to signup - it will handle duplicate email if account exists
+        } else {
+          // Re-throw other FirebaseAuthExceptions from fetchSignInMethodsForEmail
+          rethrow;
+        }
       }
 
       User? user = await AuthService().signUp(
@@ -151,7 +164,8 @@ class _SignupScreenState extends State<SignupScreen> with RouteAware {
         return;
       }
 
-      await AuthService().sendEmailVerification();
+      // Note: Email verification is already sent in AuthService().signUp()
+      // No need to call sendEmailVerification() again here
 
       if (!mounted) return;
       Navigator.pushReplacementNamed(
@@ -171,9 +185,36 @@ class _SignupScreenState extends State<SignupScreen> with RouteAware {
       if (e.code == 'invalid-email') {
         msg = 'Invalid email address.';
       } else if (e.code == 'too-many-requests') {
-        msg = 'Too many attempts. Please try again later.';
+        // If we get too-many-requests during account creation, the account might have been created
+        // Check if we can sign in to verify account exists
+        try {
+          await FirebaseAuth.instance.signInWithEmailAndPassword(
+            email: email,
+            password: password,
+          );
+          // If sign-in succeeds, account was created - navigate to verification
+          await FirebaseAuth.instance.signOut(); // Sign out immediately
+          if (mounted) {
+            Navigator.pushReplacementNamed(
+              context,
+              '/verification',
+              arguments: {
+                'email': email,
+                'password': null,
+                'name': name,
+                'isGoogleUser': false,
+                'photoURL': null,
+                'credential': null,
+              },
+            );
+            return;
+          }
+        } catch (_) {
+          // Sign-in failed, account probably wasn't created
+          msg = 'Too many attempts. Please wait a moment and try again.';
+        }
       } else if (e.code == 'email-already-in-use') {
-        msg = 'This email is already registered.';
+        msg = 'This email is already registered. Please login or use "Forgot Password".';
       }
       setState(() {
         _error = msg;

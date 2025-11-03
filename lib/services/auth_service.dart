@@ -29,14 +29,15 @@ class AuthService {
     if (user != null) {
       print('User created successfully: ${user.uid}');
       
-      // Send verification email
+      // Send verification email (non-blocking - don't fail signup if email sending fails)
       if (!user.emailVerified) {
         try {
           await user.sendEmailVerification();
           print("Verification email sent to $email");
         } catch (e) {
-          print("Error sending verification email: $e");
-          throw e; // Re-throw so caller knows about email sending failure
+          // Log error but don't throw - account creation succeeded, user can request verification email later
+          print("Warning: Error sending verification email (account still created): $e");
+          // Don't re-throw - allow signup to complete successfully
         }
       }
 
@@ -69,7 +70,7 @@ class AuthService {
 }
 
 
-  // Login (existing)
+  // Login (existing) - for customers only
   Future<User?> login({
     required String email,
     required String password,
@@ -79,10 +80,14 @@ class AuthService {
       password: password,
     );
 
-    // Get user role and update displayName for AuthWrapper
+    // Check user role and prevent owners from logging in as customers
     if (result.user != null) {
       String? userRole = await getUserRole(result.user!.uid);
       if (userRole != null) {
+        if (userRole == 'owner') {
+          await signOut();
+          throw Exception('Access denied. This account is registered as a gas station owner. Please use the Owner Login instead.');
+        }
         await result.user!.updateDisplayName(userRole);
       }
     }
@@ -128,16 +133,29 @@ Future<Map<String, dynamic>?> signInWithGoogleAsCustomer() async {
       };
 
       await _db.collection('users').doc(user.uid).set(userData);
+    } else {
+      // 6. Check if existing user is an owner - prevent owners from customer login
+      final userDoc = await _db.collection('users').doc(user.uid).get();
+      if (userDoc.exists && userDoc.data() != null) {
+        final userData = userDoc.data() as Map<String, dynamic>;
+        final role = userData['role'] as String? ?? 'customer';
+        
+        if (role == 'owner') {
+          await signOut();
+          await GoogleSignIn().signOut();
+          throw Exception('Access denied. This Google account is registered as a gas station owner. Please use the Owner Login instead.');
+        }
+      }
     }
 
-    // 6. Return result
+    // 7. Return result
     return {
       'user': user,
       'isNewUser': isNewUser,
     };
   } catch (e) {
     print("Google Sign-In error: $e");
-    return null;
+    rethrow; // Re-throw so caller can handle the error
   }
 }
 
@@ -165,7 +183,32 @@ Future<Map<String, dynamic>?> signInWithGoogleAsOwner() async {
         final approvalStatus = userData['approvalStatus'] as String?;
 
         if (role == 'owner') {
-          if (approvalStatus == 'approved' || approvalStatus == 'request_submission') {
+          // Check if this is a rejected owner trying to re-register
+          if (approvalStatus == 'rejected') {
+            // For rejected owners trying to sign up again:
+            // Delete their Firestore document and treat them as a new user
+            // so they can go through verification/document upload again
+            await _db.collection('users').doc(firebaseUser.uid).delete();
+            try {
+              await firebaseUser.delete();
+            } catch (e) {
+              print('Warning: failed to delete temporary web user (owner): $e');
+            }
+            await _auth.signOut();
+
+            final userDataForSignup = {
+              'name': displayName,
+              'email': email,
+              'photoURL': photoURL,
+            };
+
+            return {
+              'user': null,
+              'isNewUser': true, // Treat as new user - go to verification
+              'userData': userDataForSignup,
+              'credential': oauthCred,
+            };
+          } else if (approvalStatus == 'approved' || approvalStatus == 'request_submission') {
             await firebaseUser.updateDisplayName('owner');
             return {
               'user': firebaseUser,
@@ -244,24 +287,36 @@ Future<Map<String, dynamic>?> signInWithGoogleAsOwner() async {
             final emailNotificationSent = userData['emailNotificationSent'] as bool? ?? false;
             final documentsSubmitted = userData['documentsSubmitted'] as bool? ?? false;
 
-            if (role == 'owner') {
-              if (approvalStatus == 'pending' && !emailNotificationSent) {
+              if (role == 'owner') {
+              // Check if this is a rejected owner trying to re-register
+              if (approvalStatus == 'rejected') {
+                // For rejected owners trying to sign up again:
+                // Delete their Firestore document and treat them as a new user
+                // so they can go through verification/document upload again
+                await _db.collection('users').doc(user.uid).delete();
                 await _auth.signOut();
-                throw Exception('Your registration is still being processed. Please wait for an email notification from our admin team before attempting to log in.');
-              }
+                await _googleSignIn.signOut();
 
-              if (approvalStatus == 'approved' || approvalStatus == 'request_submission') {
+                final userData = {
+                  'name': googleUser.displayName ?? 'Owner',
+                  'email': googleUser.email,
+                  'photoURL': googleUser.photoUrl,
+                };
+
+                return {
+                  'user': null,
+                  'isNewUser': true, // Treat as new user - go to verification
+                  'userData': userData,
+                  'credential': credential,
+                };
+              } else {
+                // Allow login for all other statuses - login screen will handle routing
                 await user.updateDisplayName('owner');
                 return {
                   'user': user,
-                  'isNewUser': false, // Existing owner - go to dashboard
+                  'isNewUser': false,
+                  'userData': userData, // Pass userData so login screen can check verification status
                 };
-              } else if (approvalStatus == 'pending' && emailNotificationSent) {
-                await _auth.signOut();
-                throw Exception('Your owner account is pending admin approval. Please check your email for updates and wait for approval notification.');
-              } else {
-                await _auth.signOut();
-                throw Exception('Your owner account has not been approved. Please contact admin.');
               }
             } else {
               // User exists but not an owner
@@ -400,30 +455,21 @@ Future<User?> completeGoogleOwnerAfterVerification({
   if (result.user != null) {
     String? userRole = await getUserRole(result.user!.uid);
     if (userRole == 'owner') {
-      // Check approval status and email notification status
+      // Don't block login - let the login screen handle routing based on verification status
+      // This allows owners to continue their verification process
       final userDoc = await _db.collection('users').doc(result.user!.uid).get();
       final userData = userDoc.data() as Map<String, dynamic>?;
-
       final approvalStatus = userData?['approvalStatus'] as String?;
-      final emailNotificationSent = userData?['emailNotificationSent'] as bool? ?? false;
 
-      // Prevent login if still pending and no email notification has been sent
-      if (approvalStatus == 'pending' && !emailNotificationSent) {
+      // Only block rejected users
+      if (approvalStatus == 'rejected') {
         await signOut();
-        throw Exception('Your registration is still being processed. Please wait for an email notification from our admin team before attempting to log in.');
+        throw Exception('Cannot Access: Your registration has been rejected. Please sign up again with updated documents.');
       }
-
-      // Allow login if approved or request_submission
-      if (approvalStatus == 'approved' || approvalStatus == 'request_submission') {
-        await result.user!.updateDisplayName('owner');
-        return result.user;
-      } else if (approvalStatus == 'pending' && emailNotificationSent) {
-        await signOut();
-        throw Exception('Your owner account is pending admin approval. Please check your email for updates and wait for approval notification.');
-      } else {
-        await signOut();
-        throw Exception('Your owner account has not been approved. Please contact admin for assistance.');
-      }
+      
+      // Allow login for all other statuses - login screen will handle routing
+      await result.user!.updateDisplayName('owner');
+      return result.user;
     } else {
       await signOut();
       throw Exception('Access denied. This account is not registered as a gas station owner.');
@@ -432,7 +478,14 @@ Future<User?> completeGoogleOwnerAfterVerification({
 
   return null;
 }
-
+Stream<String?> watchApprovalStatus(String uid) {
+  return _db.collection('users').doc(uid).snapshots().map((snapshot) {
+    if (snapshot.exists) {
+      return snapshot.data()?['approvalStatus'] as String?;
+    }
+    return null;
+  });
+}
 // Optional: small uniform logger to make printed logs consistent
   void _log(String message) {
     final ts = DateTime.now().toIso8601String();
@@ -476,6 +529,12 @@ Future<User?> completeGoogleOwnerAfterVerification({
     );
 
     if (result.user != null) {
+      // Check if user is an owner - prevent owners from customer login
+      String? userRole = await getUserRole(result.user!.uid);
+      if (userRole == 'owner') {
+        await signOut();
+        throw Exception('Access denied. This account is registered as a gas station owner. Please use the Owner Login instead.');
+      }
       await result.user!.updateDisplayName('customer');
     }
 
