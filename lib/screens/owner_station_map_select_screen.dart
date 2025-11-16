@@ -5,11 +5,26 @@ import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:http/http.dart' as http;
 import 'package:latlong2/latlong.dart';
+import 'package:location/location.dart';
 
 import '../models/gas_station.dart';
 import '../services/auth_service.dart';
 import '../services/firestore_service.dart';
 import '../services/gas_station_service.dart';
+
+// Fuel type filter enum
+enum FuelTypeFilter {
+  all('All Fuel Types'),
+  regularOnly('Only Regular'),
+  premiumOnly('Only Premium'),
+  dieselOnly('Only Diesel'),
+  regularAndPremium('Regular & Premium'),
+  premiumAndDiesel('Premium & Diesel'),
+  regularAndDiesel('Regular & Diesel');
+
+  final String label;
+  const FuelTypeFilter(this.label);
+}
 
 class OwnerStationMapSelectScreen extends StatefulWidget {
   const OwnerStationMapSelectScreen({Key? key}) : super(key: key);
@@ -19,26 +34,247 @@ class OwnerStationMapSelectScreen extends StatefulWidget {
 }
 
 class _OwnerStationMapSelectScreenState extends State<OwnerStationMapSelectScreen> {
-  // Remove GoogleMapController
-  // GoogleMapController? _mapController;
+  final MapController _mapController = MapController();
+  final TextEditingController _searchController = TextEditingController();
+  final Location _location = Location();
+  
   String? _selectedStationName;
+  String? _selectedAddress;
   LatLng? _selectedLatLng;
   String? _selectedStationId;
   List<GasStation> _gasStations = [];
   List<GasStation> _ownerStations = [];
+  List<GasStation> _filteredStations = [];
+  List<GasStation> _nearbyStations = [];
   bool _isLoading = true;
   bool _showOwnerStationsOnly = false;
+  bool _showNearbyList = false;
+  bool _isGettingLocation = false;
+  LatLng? _currentLocation;
+  double _currentZoom = 14.0;
+  FuelTypeFilter? _selectedFuelTypeFilter;
 
-  // Use a regular field for Valencia City center
-  final LatLng _valenciaCityCenter = LatLng(7.9061, 125.0946); // Valencia City, Bukidnon
+  // REMOVED: Default location center
+  // Map will use current location or center on selected/available stations
 
   @override
   void initState() {
     super.initState();
     _loadAllStations();
+    _searchController.addListener(_onSearchChanged);
   }
 
-  // Animated marker widget for gas station (adapted from map_tab.dart)
+  @override
+  void dispose() {
+    _searchController.removeListener(_onSearchChanged);
+    _searchController.dispose();
+    _mapController.dispose();
+    super.dispose();
+  }
+
+  void _onSearchChanged() {
+    _filterStations();
+  }
+
+  void _filterStations() {
+    final query = _searchController.text.toLowerCase().trim();
+    setState(() {
+      List<GasStation> stations = _gasStations;
+
+      // Apply search filter
+      if (query.isNotEmpty) {
+        stations = stations.where((station) {
+          return (station.name?.toLowerCase().contains(query) ?? false) ||
+              (station.brand?.toLowerCase().contains(query) ?? false) ||
+              (station.address?.toLowerCase().contains(query) ?? false);
+        }).toList();
+      }
+
+      // Apply fuel type filter
+      if (_selectedFuelTypeFilter != null && _selectedFuelTypeFilter != FuelTypeFilter.all) {
+        stations = stations.where((station) {
+          return _stationMatchesFuelTypeFilter(station, _selectedFuelTypeFilter!);
+        }).toList();
+      }
+
+      _filteredStations = stations;
+      _updateNearbyStations();
+    });
+  }
+
+  // Check if a station matches the selected fuel type filter
+  bool _stationMatchesFuelTypeFilter(GasStation station, FuelTypeFilter filter) {
+    if (station.prices == null || station.prices!.isEmpty) return false;
+
+    // Normalize fuel type keys to lowercase for comparison
+    final availableFuelTypes = station.prices!.keys.map((k) => k.toLowerCase()).toSet();
+
+    switch (filter) {
+      case FuelTypeFilter.regularOnly:
+        return availableFuelTypes.contains('regular') && 
+               !availableFuelTypes.contains('premium') && 
+               !availableFuelTypes.contains('diesel');
+      
+      case FuelTypeFilter.premiumOnly:
+        return availableFuelTypes.contains('premium') && 
+               !availableFuelTypes.contains('regular') && 
+               !availableFuelTypes.contains('diesel');
+      
+      case FuelTypeFilter.dieselOnly:
+        return availableFuelTypes.contains('diesel') && 
+               !availableFuelTypes.contains('regular') && 
+               !availableFuelTypes.contains('premium');
+      
+      case FuelTypeFilter.regularAndPremium:
+        return availableFuelTypes.contains('regular') && 
+               availableFuelTypes.contains('premium') &&
+               !availableFuelTypes.contains('diesel');
+      
+      case FuelTypeFilter.premiumAndDiesel:
+        return availableFuelTypes.contains('premium') && 
+               availableFuelTypes.contains('diesel') &&
+               !availableFuelTypes.contains('regular');
+      
+      case FuelTypeFilter.regularAndDiesel:
+        return availableFuelTypes.contains('regular') && 
+               availableFuelTypes.contains('diesel') &&
+               !availableFuelTypes.contains('premium');
+      
+      case FuelTypeFilter.all:
+        return true;
+    }
+  }
+
+  void _updateNearbyStations() {
+    if (_selectedLatLng == null) {
+      _nearbyStations = [];
+      return;
+    }
+
+    final stations = _displayedStations.map((station) {
+      final distance = _calculateDistance(
+        _selectedLatLng!.latitude,
+        _selectedLatLng!.longitude,
+        station.position.latitude,
+        station.position.longitude,
+      );
+      return MapEntry(station, distance);
+    }).toList();
+
+    stations.sort((a, b) => a.value.compareTo(b.value));
+    _nearbyStations = stations.take(5).map((e) => e.key).toList();
+  }
+
+  Future<void> _getCurrentLocation() async {
+    setState(() {
+      _isGettingLocation = true;
+    });
+
+    try {
+      bool serviceEnabled = await _location.serviceEnabled();
+      if (!serviceEnabled) {
+        serviceEnabled = await _location.requestService();
+        if (!serviceEnabled) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('Location services are disabled. Please enable them in settings.'),
+                backgroundColor: Colors.orange,
+              ),
+            );
+          }
+          return;
+        }
+      }
+
+      PermissionStatus permissionGranted = await _location.hasPermission();
+      if (permissionGranted == PermissionStatus.denied) {
+        permissionGranted = await _location.requestPermission();
+        if (permissionGranted != PermissionStatus.granted) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('Location permission denied. Please grant location access.'),
+                backgroundColor: Colors.orange,
+              ),
+            );
+          }
+          return;
+        }
+      }
+
+      final locationData = await _location.getLocation();
+      final currentLatLng = LatLng(locationData.latitude!, locationData.longitude!);
+
+      setState(() {
+        _currentLocation = currentLatLng;
+      });
+
+      // Animate map to current location
+      _mapController.move(currentLatLng, _currentZoom);
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('📍 Centered on your current location'),
+            duration: Duration(seconds: 2),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
+    } catch (e) {
+      print('Error getting current location: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error getting location: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    } finally {
+      setState(() {
+        _isGettingLocation = false;
+      });
+    }
+  }
+
+  void _clearSelection() {
+    setState(() {
+      _selectedLatLng = null;
+      _selectedStationName = null;
+      _selectedAddress = null;
+      _selectedStationId = null;
+      _nearbyStations = [];
+    });
+  }
+
+  // Get price ranges for color coding
+  Map<String, double> _getPriceRanges() {
+    final prices = _displayedStations
+        .map((s) => s.prices?['Regular'])
+        .where((p) => p != null)
+        .cast<double>()
+        .toList();
+
+    if (prices.isEmpty) return {'cheap': 50.0, 'expensive': 70.0};
+
+    prices.sort();
+
+    return {
+      'cheap': prices[(prices.length / 3).floor()],
+      'expensive': prices[(prices.length * 2 / 3).floor()],
+    };
+  }
+
+  // Color coding: Green = cheap, Yellow = medium, Red = expensive
+  Color _colorForPriceWithRanges(double price, Map<String, double> ranges) {
+    if (price <= ranges['cheap']!) return Colors.green;
+    if (price <= ranges['expensive']!) return Colors.yellow; // Changed from orange to yellow
+    return Colors.red;
+  }
+
+  // Animated marker widget for gas station (optimized for performance)
   Widget _AnimatedGasStationMarker({
     required GasStation gasStation,
     required bool isSelected,
@@ -55,38 +291,49 @@ class _OwnerStationMapSelectScreenState extends State<OwnerStationMapSelectScree
     } else if (isOwnerCreated) {
       markerColor = Colors.cyan;
     } else {
-      // Brand-based colors for public stations
-      switch (gasStation.brand?.toLowerCase() ?? '') {
-        case 'shell':
-          markerColor = Colors.yellow;
-          break;
-        case 'petron':
-          markerColor = Colors.blue;
-          break;
-        case 'caltex':
-          markerColor = Colors.green;
-          break;
-        case 'phoenix':
-          markerColor = Colors.orange;
-          break;
-        default:
-          markerColor = Colors.purple;
+      // Use price-based color coding for public stations
+      final price = gasStation.prices?['Regular'];
+      if (price != null) {
+        final ranges = _getPriceRanges();
+        markerColor = _colorForPriceWithRanges(price, ranges);
+      } else {
+        // Brand-based colors as fallback
+        switch (gasStation.brand?.toLowerCase() ?? '') {
+          case 'shell':
+            markerColor = Colors.yellow;
+            break;
+          case 'petron':
+            markerColor = Colors.blue;
+            break;
+          case 'caltex':
+            markerColor = Colors.green;
+            break;
+          case 'phoenix':
+            markerColor = Colors.orange;
+            break;
+          default:
+            markerColor = Colors.purple;
+        }
       }
     }
 
     // Get price for display (use Regular as default)
     final price = gasStation.prices?['Regular'];
+    final ranges = _getPriceRanges();
 
-    return _GasStationMarkerWidget(
-      station: gasStation,
-      markerColor: markerColor,
-      price: price,
-      rating: gasStation.rating ?? 0.0,
-      isOpen: gasStation.isOpen,
-      isSelected: isSelected,
-      isOwnedByCurrentUser: isOwnedByCurrentUser,
-      isOwnerCreated: isOwnerCreated,
-      onTap: onTap,
+    return RepaintBoundary(
+      child: _GasStationMarkerWidget(
+        station: gasStation,
+        markerColor: markerColor,
+        price: price,
+        priceRanges: ranges,
+        rating: gasStation.rating ?? 0.0,
+        isOpen: gasStation.isOpen,
+        isSelected: isSelected,
+        isOwnedByCurrentUser: isOwnedByCurrentUser,
+        isOwnerCreated: isOwnerCreated,
+        onTap: onTap,
+      ),
     );
   }
 
@@ -121,18 +368,14 @@ class _OwnerStationMapSelectScreenState extends State<OwnerStationMapSelectScree
     });
 
     try {
-      // Load all available stations in Valencia City, Bukidnon for signup selection
+      // Load all available stations for signup selection
       final allStations = await _loadAllAvailableStations();
       
       setState(() {
         _gasStations = allStations;
         _ownerStations = []; // Empty for signup - showing all available stations
+        _filteredStations = allStations;
         _isLoading = false;
-        
-        // Auto-focus on Valencia City area
-        // if (_mapController != null) {
-        //   _focusOnValenciaCity();
-        // }
       });
     } catch (e) {
       print('Error loading stations: $e');
@@ -204,10 +447,15 @@ class _OwnerStationMapSelectScreenState extends State<OwnerStationMapSelectScree
     final List<GasStation> allStations = [];
     
     try {
-      // 1. Load stations from Firestore (all owner-created stations)
+      // Load only approved stations from Firestore
+      // Map starts empty - stations only appear when owners register and are approved
       final firestoreStations = await _loadFirestoreStations();
       allStations.addAll(firestoreStations);
       
+      // COMMENTED OUT: Loading OSM stations
+      // For document submission, owners should select location manually or use current location
+      // Gas stations should only appear when owners register and are approved
+      /*
       // 2. Load stations from OpenStreetMap
       final osmStations = await _loadOpenStreetMapStations();
       
@@ -232,6 +480,7 @@ class _OwnerStationMapSelectScreenState extends State<OwnerStationMapSelectScree
           allStations.add(osmStation);
         }
       }
+      */
       
     } catch (e) {
       print('Error loading all stations: $e');
@@ -248,7 +497,16 @@ class _OwnerStationMapSelectScreenState extends State<OwnerStationMapSelectScree
       final firestoreStations = await FirestoreService.getAllGasStations();
       final List<GasStation> stations = [];
       
+      // Filter stations to only include those from approved owners
+      // Use ownerApprovalStatus field stored in gas_station document (avoids permission issues)
       for (final stationData in firestoreStations) {
+        final ownerApprovalStatus = stationData['ownerApprovalStatus'] as String? ?? 'pending';
+        
+        // Only include stations from approved owners
+        if (ownerApprovalStatus != 'approved') {
+          continue; // Skip this station
+        }
+        
         final position = stationData['position'];
         LatLng latLng;
         
@@ -261,7 +519,23 @@ class _OwnerStationMapSelectScreenState extends State<OwnerStationMapSelectScree
           latLng = LatLng(position.latitude, position.longitude);
         }
         
-        final prices = Map<String, double>.from(stationData['prices'] ?? {});
+        final prices = <String, double>{};
+        final rawPrices = stationData['prices'];
+        if (rawPrices is Map) {
+          rawPrices.forEach((key, value) {
+            final normalizedKey = key.toString().trim().toLowerCase();
+            if (normalizedKey.isEmpty) return;
+            double? parsed;
+            if (value is num) {
+              parsed = value.toDouble();
+            } else if (value != null) {
+              parsed = double.tryParse(value.toString());
+            }
+            if (parsed == null || !parsed.isFinite || parsed.isNaN) return;
+            if (parsed < 0) parsed = 0;
+            prices[normalizedKey] = parsed;
+          });
+        }
         
         final gasStation = GasStation(
           id: stationData['id'] ?? '',
@@ -335,6 +609,10 @@ class _OwnerStationMapSelectScreenState extends State<OwnerStationMapSelectScree
     }
   }
 
+  // COMMENTED OUT: Loading OSM stations with randomized prices
+  // For document submission, owners should select location manually or use current location
+  // Gas stations should only appear when owners register and are approved
+  /*
   Future<List<GasStation>> _loadOpenStreetMapStations() async {
     const bbox = '7.85,125.00,7.95,125.15';
     final query = '''
@@ -371,7 +649,8 @@ class _OwnerStationMapSelectScreenState extends State<OwnerStationMapSelectScree
         final lon = el['lon'] ?? el['center']['lon'];
         final position = LatLng(lat, lon);
         
-        // Generate default prices for OSM stations
+        // COMMENTED OUT: Randomizer for OSM station prices
+        // Prices should come from actual gas station owners, not randomized
         final prices = {
           'Regular': 55.50 + (math.Random().nextDouble() * 5),
           'Premium': 60.00 + (math.Random().nextDouble() * 5),
@@ -402,6 +681,7 @@ class _OwnerStationMapSelectScreenState extends State<OwnerStationMapSelectScree
       return [];
     }
   }
+  */
 
   double _calculateDistance(double lat1, double lon1, double lat2, double lon2) {
     const double radiusOfEarth = 6371;
@@ -422,11 +702,11 @@ class _OwnerStationMapSelectScreenState extends State<OwnerStationMapSelectScree
     return degrees * (math.pi / 180);
   }
 
-  List<GasStation> get _filteredStations {
+  List<GasStation> get _displayedStations {
     if (_showOwnerStationsOnly) {
       return _ownerStations;
     }
-    return _gasStations;
+    return _filteredStations.isEmpty ? _gasStations : _filteredStations;
   }
 
   // Replace _markers getter with flutter_map markers
@@ -436,7 +716,7 @@ class _OwnerStationMapSelectScreenState extends State<OwnerStationMapSelectScree
     final List<Marker> markers = [];
 
     // Add existing station markers with animated marker widget
-    markers.addAll(_filteredStations.map((station) {
+    markers.addAll(_displayedStations.map((station) {
       final bool isSelected = _selectedLatLng != null &&
           station.position.latitude == _selectedLatLng!.latitude &&
           station.position.longitude == _selectedLatLng!.longitude;
@@ -458,7 +738,10 @@ class _OwnerStationMapSelectScreenState extends State<OwnerStationMapSelectScree
               _selectedLatLng = station.position;
               _selectedStationName = station.name;
               _selectedStationId = station.id;
+              _selectedAddress = station.address;
             });
+            _updateNearbyStations();
+            _mapController.move(station.position, _currentZoom);
           },
         ),
       );
@@ -498,35 +781,112 @@ class _OwnerStationMapSelectScreenState extends State<OwnerStationMapSelectScree
       _selectedLatLng = point;
       _selectedStationId = null; // custom
     });
+    _updateNearbyStations();
     _showCustomStationNameDialog();
   }
 
   void _showCustomStationNameDialog() {
-    final TextEditingController controller = TextEditingController(text: _selectedStationName);
+    final TextEditingController nameController = TextEditingController(text: _selectedStationName);
+    final TextEditingController addressController = TextEditingController(text: _selectedAddress);
+    
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Enter Station Name'),
-        content: TextField(
-          controller: controller,
-          decoration: const InputDecoration(hintText: 'Gas Station Name'),
-          autofocus: true,
+        title: const Row(
+          children: [
+            Icon(Icons.add_location, color: Colors.blue),
+            SizedBox(width: 8),
+            Text('Default Location'),
+          ],
+        ),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'Enter details for your new gas station:',
+                style: TextStyle(fontSize: 14, color: Colors.grey),
+              ),
+              const SizedBox(height: 16),
+              TextField(
+                controller: nameController,
+                decoration: const InputDecoration(
+                  labelText: 'Station Name *',
+                  hintText: 'e.g., Petron Station',
+                  prefixIcon: Icon(Icons.local_gas_station),
+                  border: OutlineInputBorder(),
+                ),
+                autofocus: true,
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: addressController,
+                decoration: const InputDecoration(
+                  labelText: 'Address (Optional)',
+                  hintText: 'e.g., Street Address, City',
+                  prefixIcon: Icon(Icons.location_on),
+                  border: OutlineInputBorder(),
+                ),
+                maxLines: 2,
+              ),
+              const SizedBox(height: 8),
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: Colors.blue.shade50,
+                  borderRadius: BorderRadius.circular(4),
+                ),
+                child: Row(
+                  children: [
+                    Icon(Icons.info_outline, size: 16, color: Colors.blue.shade700),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'Coordinates: ${_selectedLatLng?.latitude.toStringAsFixed(6)}, ${_selectedLatLng?.longitude.toStringAsFixed(6)}',
+                        style: TextStyle(fontSize: 11, color: Colors.blue.shade700),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
-          ),
-          TextButton(
             onPressed: () {
-              if (controller.text.trim().isNotEmpty) {
-                setState(() {
-                  _selectedStationName = controller.text.trim();
-                });
-              }
+              setState(() {
+                _selectedLatLng = null;
+                _selectedStationName = null;
+                _selectedAddress = null;
+              });
               Navigator.pop(context);
             },
-            child: const Text('OK'),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              if (nameController.text.trim().isNotEmpty) {
+                setState(() {
+                  _selectedStationName = nameController.text.trim();
+                  _selectedAddress = addressController.text.trim();
+                });
+                Navigator.pop(context);
+              } else {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('Please enter a station name'),
+                    backgroundColor: Colors.orange,
+                  ),
+                );
+              }
+            },
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.blue,
+              foregroundColor: Colors.white,
+            ),
+            child: const Text('Confirm'),
           ),
         ],
       ),
@@ -545,9 +905,7 @@ class _OwnerStationMapSelectScreenState extends State<OwnerStationMapSelectScree
               setState(() {
                 _showOwnerStationsOnly = !_showOwnerStationsOnly;
                 // Clear selection when switching views
-                _selectedLatLng = null;
-                _selectedStationName = null;
-                _selectedStationId = null;
+                _clearSelection();
               });
             },
             tooltip: _showOwnerStationsOnly ? 'Show All Stations' : 'Show My Stations Only',
@@ -563,6 +921,87 @@ class _OwnerStationMapSelectScreenState extends State<OwnerStationMapSelectScree
           ? const Center(child: CircularProgressIndicator())
           : Column(
               children: [
+                // Search bar
+                Container(
+                  padding: const EdgeInsets.all(12.0),
+                  color: Colors.white,
+                  child: Column(
+                    children: [
+                      TextField(
+                        controller: _searchController,
+                        decoration: InputDecoration(
+                          hintText: 'Search stations by name, brand, or address...',
+                          prefixIcon: const Icon(Icons.search),
+                          suffixIcon: _searchController.text.isNotEmpty
+                              ? IconButton(
+                                  icon: const Icon(Icons.clear),
+                                  onPressed: () {
+                                    _searchController.clear();
+                                  },
+                                )
+                              : null,
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          filled: true,
+                          fillColor: Colors.grey.shade50,
+                        ),
+                        onChanged: (_) => setState(() {}), // Rebuild to show/hide clear button
+                      ),
+                      const SizedBox(height: 8),
+                      // Fuel type filter dropdown
+                      DropdownButtonFormField<FuelTypeFilter?>(
+                        value: _selectedFuelTypeFilter,
+                        decoration: InputDecoration(
+                          labelText: 'Filter by Fuel Type',
+                          prefixIcon: const Icon(Icons.filter_alt),
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          filled: true,
+                          fillColor: Colors.grey.shade50,
+                          contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                        ),
+                        items: [
+                          const DropdownMenuItem<FuelTypeFilter?>(
+                            value: null,
+                            child: Text('All Fuel Types'),
+                          ),
+                          ...FuelTypeFilter.values.map((filter) {
+                            return DropdownMenuItem<FuelTypeFilter?>(
+                              value: filter,
+                              child: Text(filter.label),
+                            );
+                          }),
+                        ],
+                        onChanged: (FuelTypeFilter? value) {
+                          setState(() {
+                            _selectedFuelTypeFilter = value;
+                            _filterStations();
+                          });
+                        },
+                      ),
+                      const SizedBox(height: 8),
+                      // Instructions
+                      Row(
+                        children: [
+                          Icon(Icons.info_outline, size: 16, color: Colors.blue.shade700),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              'Tap on a station marker to select it, or tap anywhere on the map to create a new location',
+                              style: TextStyle(
+                                fontSize: 11,
+                                color: Colors.grey.shade700,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+                
                 // Filter indicator
                 if (_showOwnerStationsOnly)
                   Container(
@@ -592,39 +1031,228 @@ class _OwnerStationMapSelectScreenState extends State<OwnerStationMapSelectScree
                       children: [
                         Icon(Icons.all_inclusive, size: 16, color: Colors.grey.shade700),
                         const SizedBox(width: 8),
-                        Text(
-                          'Showing all available stations (${_gasStations.length} stations)',
-                          style: TextStyle(
-                            color: Colors.grey.shade700,
-                            fontWeight: FontWeight.w500,
+                        Expanded(
+                          child: Text(
+                            'Showing ${_filteredStations.isEmpty ? _gasStations.length : _filteredStations.length} available stations${_selectedFuelTypeFilter != null && _selectedFuelTypeFilter != FuelTypeFilter.all ? ' (${_selectedFuelTypeFilter!.label})' : ''}',
+                            style: TextStyle(
+                              color: Colors.grey.shade700,
+                              fontWeight: FontWeight.w500,
+                            ),
                           ),
                         ),
+                        if (_selectedFuelTypeFilter != null && _selectedFuelTypeFilter != FuelTypeFilter.all)
+                          IconButton(
+                            icon: const Icon(Icons.clear, size: 18),
+                            onPressed: () {
+                              setState(() {
+                                _selectedFuelTypeFilter = null;
+                                _filterStations();
+                              });
+                            },
+                            tooltip: 'Clear fuel type filter',
+                            padding: EdgeInsets.zero,
+                            constraints: const BoxConstraints(),
+                          ),
                       ],
                     ),
                   ),
                 
                 // Map
                 Expanded(
-                  child: FlutterMap(
-                    options: MapOptions(
-                      initialCenter: _valenciaCityCenter,
-                      initialZoom: 14,
-                      interactionOptions: const InteractionOptions(
-                        flags: InteractiveFlag.all,
-                      ),
-                      onTap: (tapPosition, point) => _onMapTap(point),
-                    ),
+                  child: Stack(
                     children: [
-                      TileLayer(
-                        urlTemplate: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
-                        subdomains: const ['a', 'b', 'c'],
+                      FlutterMap(
+                        mapController: _mapController,
+                        options: MapOptions(
+                          // Use current location if available, otherwise use Valencia City, Bukidnon as default
+                          initialCenter: _currentLocation ?? const LatLng(7.9055, 125.0908),
+                          initialZoom: _currentZoom,
+                          interactionOptions: const InteractionOptions(
+                            flags: InteractiveFlag.all,
+                          ),
+                          onTap: (tapPosition, point) => _onMapTap(point),
+                          onMapEvent: (event) {
+                            if (event is MapEventMove) {
+                              _currentZoom = event.camera.zoom;
+                            }
+                          },
+                        ),
+                        children: [
+                          TileLayer(
+                            urlTemplate: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+                            subdomains: const ['a', 'b', 'c'],
+                          ),
+                          MarkerLayer(
+                            markers: _markers,
+                          ),
+                          // Current location marker
+                          if (_currentLocation != null)
+                            MarkerLayer(
+                              markers: [
+                                Marker(
+                                  point: _currentLocation!,
+                                  width: 40,
+                                  height: 40,
+                                  child: Container(
+                                    decoration: BoxDecoration(
+                                      color: Colors.blue,
+                                      shape: BoxShape.circle,
+                                      border: Border.all(color: Colors.white, width: 3),
+                                      boxShadow: [
+                                        BoxShadow(
+                                          color: Colors.blue.withOpacity(0.3),
+                                          blurRadius: 8,
+                                          spreadRadius: 2,
+                                        ),
+                                      ],
+                                    ),
+                                    child: const Icon(
+                                      Icons.my_location,
+                                      color: Colors.white,
+                                      size: 20,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                        ],
                       ),
-                      MarkerLayer(
-                        markers: _markers,
+                      // Floating action buttons
+                      Positioned(
+                        top: 16,
+                        right: 16,
+                        child: Column(
+                          children: [
+                            FloatingActionButton.small(
+                              heroTag: 'location',
+                              onPressed: _isGettingLocation ? null : _getCurrentLocation,
+                              backgroundColor: Colors.white,
+                              child: _isGettingLocation
+                                  ? const SizedBox(
+                                      width: 20,
+                                      height: 20,
+                                      child: CircularProgressIndicator(strokeWidth: 2),
+                                    )
+                                  : const Icon(Icons.my_location, color: Colors.blue),
+                            ),
+                            const SizedBox(height: 8),
+                            FloatingActionButton.small(
+                              heroTag: 'zoom_in',
+                              onPressed: () {
+                                _currentZoom = (_currentZoom + 1).clamp(3.0, 18.0);
+                                _mapController.move(_mapController.camera.center, _currentZoom);
+                              },
+                              backgroundColor: Colors.white,
+                              child: const Icon(Icons.zoom_in, color: Colors.blue),
+                            ),
+                            const SizedBox(height: 8),
+                            FloatingActionButton.small(
+                              heroTag: 'zoom_out',
+                              onPressed: () {
+                                _currentZoom = (_currentZoom - 1).clamp(3.0, 18.0);
+                                _mapController.move(_mapController.camera.center, _currentZoom);
+                              },
+                              backgroundColor: Colors.white,
+                              child: const Icon(Icons.zoom_out, color: Colors.blue),
+                            ),
+                          ],
+                        ),
                       ),
                     ],
                   ),
                 ),
+                
+                // Nearby stations list (collapsible)
+                if (_nearbyStations.isNotEmpty && _selectedLatLng != null)
+                  AnimatedContainer(
+                    duration: const Duration(milliseconds: 300),
+                    curve: Curves.easeInOut,
+                    height: _showNearbyList ? 200 : 0,
+                    decoration: BoxDecoration(
+                      color: Colors.grey.shade50,
+                      border: Border(
+                        top: BorderSide(color: Colors.grey.shade300),
+                        bottom: BorderSide(color: Colors.grey.shade300),
+                      ),
+                    ),
+                    child: Column(
+                      children: [
+                        InkWell(
+                          onTap: () {
+                            setState(() {
+                              _showNearbyList = !_showNearbyList;
+                            });
+                          },
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                            child: Row(
+                              children: [
+                                Icon(
+                                  Icons.near_me,
+                                  size: 18,
+                                  color: Colors.blue.shade700,
+                                ),
+                                const SizedBox(width: 8),
+                                Text(
+                                  'Nearby Stations (${_nearbyStations.length})',
+                                  style: TextStyle(
+                                    fontWeight: FontWeight.w600,
+                                    color: Colors.blue.shade700,
+                                  ),
+                                ),
+                                const Spacer(),
+                                Icon(
+                                  _showNearbyList ? Icons.expand_less : Icons.expand_more,
+                                  color: Colors.grey.shade600,
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                        if (_showNearbyList)
+                          Expanded(
+                            child: ListView.builder(
+                              padding: const EdgeInsets.symmetric(horizontal: 8),
+                              itemCount: _nearbyStations.length,
+                              itemBuilder: (context, index) {
+                                final station = _nearbyStations[index];
+                                final distance = _calculateDistance(
+                                  _selectedLatLng!.latitude,
+                                  _selectedLatLng!.longitude,
+                                  station.position.latitude,
+                                  station.position.longitude,
+                                );
+                                return ListTile(
+                                  leading: Icon(
+                                    Icons.local_gas_station,
+                                    color: Colors.blue.shade700,
+                                  ),
+                                  title: Text(
+                                    station.name ?? 'Unknown Station',
+                                    style: const TextStyle(fontWeight: FontWeight.w500),
+                                  ),
+                                  subtitle: Text(
+                                    '${distance.toStringAsFixed(2)} km away',
+                                    style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+                                  ),
+                                  trailing: Icon(Icons.chevron_right, color: Colors.grey.shade400),
+                                  onTap: () {
+                                    setState(() {
+                                      _selectedLatLng = station.position;
+                                      _selectedStationName = station.name;
+                                      _selectedStationId = station.id;
+                                      _selectedAddress = station.address;
+                                    });
+                                    _mapController.move(station.position, _currentZoom);
+                                    _updateNearbyStations();
+                                  },
+                                );
+                              },
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
                 
                 // Selection info and confirm button
                 Container(
@@ -677,13 +1305,28 @@ class _OwnerStationMapSelectScreenState extends State<OwnerStationMapSelectScree
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              const Text(
-                                'Selected Station:',
-                                style: TextStyle(
-                                  fontSize: 12,
-                                  color: Colors.grey,
-                                  fontWeight: FontWeight.w500,
-                                ),
+                              Row(
+                                children: [
+                                  const Icon(Icons.check_circle, color: Colors.green, size: 20),
+                                  const SizedBox(width: 8),
+                                  const Text(
+                                    'Selected Station:',
+                                    style: TextStyle(
+                                      fontSize: 12,
+                                      color: Colors.grey,
+                                      fontWeight: FontWeight.w500,
+                                    ),
+                                  ),
+                                  const Spacer(),
+                                  IconButton(
+                                    icon: const Icon(Icons.clear, size: 18),
+                                    color: Colors.grey.shade600,
+                                    padding: EdgeInsets.zero,
+                                    constraints: const BoxConstraints(),
+                                    onPressed: _clearSelection,
+                                    tooltip: 'Clear Selection',
+                                  ),
+                                ],
                               ),
                               const SizedBox(height: 4),
                               Text(
@@ -693,25 +1336,62 @@ class _OwnerStationMapSelectScreenState extends State<OwnerStationMapSelectScree
                                   fontWeight: FontWeight.bold,
                                 ),
                               ),
+                              if (_selectedAddress != null && _selectedAddress!.isNotEmpty) ...[
+                                const SizedBox(height: 4),
+                                Text(
+                                  _selectedAddress!,
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    color: Colors.grey.shade600,
+                                  ),
+                                ),
+                              ],
+                              if (_selectedLatLng != null) ...[
+                                const SizedBox(height: 4),
+                                Text(
+                                  '📍 ${_selectedLatLng!.latitude.toStringAsFixed(6)}, ${_selectedLatLng!.longitude.toStringAsFixed(6)}',
+                                  style: TextStyle(
+                                    fontSize: 10,
+                                    color: Colors.grey.shade500,
+                                    fontFamily: 'monospace',
+                                  ),
+                                ),
+                              ],
                             ],
                           ),
                         ),
                         const SizedBox(height: 12),
                       ],
                       
-                      SizedBox(
-                        width: double.infinity,
-                        child: ElevatedButton.icon(
-                          onPressed: _selectedLatLng != null ? _onConfirm : null,
-                          icon: const Icon(Icons.check),
-                          label: const Text('Confirm Location'),
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: Colors.blue.shade800,
-                            foregroundColor: Colors.white,
-                            padding: const EdgeInsets.symmetric(vertical: 14),
-                            disabledBackgroundColor: Colors.grey.shade300,
+                      Row(
+                        children: [
+                          if (_selectedStationName != null)
+                            Expanded(
+                              child: OutlinedButton.icon(
+                                onPressed: _clearSelection,
+                                icon: const Icon(Icons.clear),
+                                label: const Text('Clear'),
+                                style: OutlinedButton.styleFrom(
+                                  padding: const EdgeInsets.symmetric(vertical: 14),
+                                ),
+                              ),
+                            ),
+                          if (_selectedStationName != null) const SizedBox(width: 12),
+                          Expanded(
+                            flex: _selectedStationName != null ? 2 : 1,
+                            child: ElevatedButton.icon(
+                              onPressed: _selectedLatLng != null ? _onConfirm : null,
+                              icon: const Icon(Icons.check),
+                              label: const Text('Confirm Location'),
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: Colors.blue.shade800,
+                                foregroundColor: Colors.white,
+                                padding: const EdgeInsets.symmetric(vertical: 14),
+                                disabledBackgroundColor: Colors.grey.shade300,
+                              ),
+                            ),
                           ),
-                        ),
+                        ],
                       ),
                     ],
                   ),
@@ -722,11 +1402,12 @@ class _OwnerStationMapSelectScreenState extends State<OwnerStationMapSelectScree
   }
 }
 
-// Gas station marker widget (adapted from map_tab.dart)
+// Gas station marker widget (optimized for performance)
 class _GasStationMarkerWidget extends StatefulWidget {
   final GasStation station;
   final Color markerColor;
   final double? price;
+  final Map<String, double> priceRanges;
   final double rating;
   final bool isOpen;
   final bool isSelected;
@@ -738,6 +1419,7 @@ class _GasStationMarkerWidget extends StatefulWidget {
     required this.station,
     required this.markerColor,
     required this.price,
+    required this.priceRanges,
     required this.rating,
     required this.isOpen,
     required this.isSelected,
@@ -750,49 +1432,14 @@ class _GasStationMarkerWidget extends StatefulWidget {
   State<_GasStationMarkerWidget> createState() => _GasStationMarkerWidgetState();
 }
 
-class _GasStationMarkerWidgetState extends State<_GasStationMarkerWidget>
-    with SingleTickerProviderStateMixin {
-  late AnimationController _animationController;
-  late Animation<double> _scaleAnimation;
-  late Animation<double> _pulseAnimation;
+class _GasStationMarkerWidgetState extends State<_GasStationMarkerWidget> {
   bool _isPressed = false;
 
-  @override
-  void initState() {
-    super.initState();
-    _animationController = AnimationController(
-      duration: const Duration(milliseconds: 1400),
-      vsync: this,
-    );
-
-    _scaleAnimation = Tween<double>(
-      begin: 1.0,
-      end: 1.08,
-    ).animate(CurvedAnimation(
-      parent: _animationController,
-      curve: Curves.easeInOut,
-    ));
-
-    _pulseAnimation = Tween<double>(
-      begin: 0.9,
-      end: 1.15,
-    ).animate(CurvedAnimation(
-      parent: _animationController,
-      curve: Curves.easeInOut,
-    ));
-
-    _animationController.repeat(reverse: true);
-  }
-
-  @override
-  void dispose() {
-    _animationController.dispose();
-    super.dispose();
-  }
-
+  // Optimized: Use dynamic price ranges instead of hardcoded values
+  // Color coding: Green = cheap, Yellow = medium, Red = expensive
   Color _getPriceBadgeColor(double price) {
-    if (price <= 55) return Colors.green;
-    if (price <= 60) return Colors.orange;
+    if (price <= widget.priceRanges['cheap']!) return Colors.green;
+    if (price <= widget.priceRanges['expensive']!) return Colors.yellow; // Changed from orange to yellow
     return Colors.red;
   }
 
@@ -816,33 +1463,27 @@ class _GasStationMarkerWidgetState extends State<_GasStationMarkerWidget>
           _isPressed = false;
         });
       },
-      child: AnimatedBuilder(
-        animation: _animationController,
-        builder: (context, child) {
-          return Transform.scale(
-            scale: _isPressed ? 0.93 : _scaleAnimation.value,
-            child: SizedBox(
-              width: 56 * s,
-              height: 56 * s,
-              child: Stack(
-                clipBehavior: Clip.none,
-                children: [
-                  // pulsing ring if open
-                  if (widget.isOpen)
-                    Positioned.fill(
-                      child: Transform.scale(
-                        scale: _pulseAnimation.value,
-                        child: Container(
-                          decoration: BoxDecoration(
-                            shape: BoxShape.circle,
-                            border: Border.all(
-                              color: widget.markerColor.withOpacity(0.18),
-                              width: 3 * s,
-                            ),
-                          ),
-                        ),
+      child: Transform.scale(
+        scale: _isPressed ? 0.93 : 1.0, // Simplified: removed continuous animation
+        child: SizedBox(
+          width: 56 * s,
+          height: 56 * s,
+          child: Stack(
+            clipBehavior: Clip.none,
+            children: [
+              // Static ring if open (removed pulsing animation for performance)
+              if (widget.isOpen)
+                Positioned.fill(
+                  child: Container(
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      border: Border.all(
+                        color: widget.markerColor.withOpacity(0.15), // Reduced opacity for less visual weight
+                        width: 2 * s, // Thinner border
                       ),
                     ),
+                  ),
+                ),
 
                   // main circle
                   Center(
@@ -854,8 +1495,8 @@ class _GasStationMarkerWidgetState extends State<_GasStationMarkerWidget>
                         shape: BoxShape.circle,
                         boxShadow: [
                           BoxShadow(
-                            color: Colors.black.withOpacity(0.25),
-                            blurRadius: 6,
+                            color: Colors.black.withOpacity(0.2), // Reduced opacity
+                            blurRadius: 4, // Reduced blur
                             offset: const Offset(0, 2),
                           ),
                         ],
@@ -885,8 +1526,8 @@ class _GasStationMarkerWidgetState extends State<_GasStationMarkerWidget>
                           border: Border.all(color: Colors.white, width: 1.2 * s),
                           boxShadow: [
                             BoxShadow(
-                              color: Colors.black.withOpacity(0.18),
-                              blurRadius: 6,
+                              color: Colors.black.withOpacity(0.15), // Reduced opacity
+                              blurRadius: 4, // Reduced blur
                               offset: const Offset(0, 1),
                             ),
                           ],
@@ -924,8 +1565,10 @@ class _GasStationMarkerWidgetState extends State<_GasStationMarkerWidget>
                     ),
                   ),
 
-                  // brand initial (top-left)
-                  if (widget.station.brand != null && widget.station.brand!.isNotEmpty)
+                  // brand initial (top-left) - only show if not using price-based color
+                  if (widget.station.brand != null && 
+                      widget.station.brand!.isNotEmpty && 
+                      widget.price == null)
                     Positioned(
                       left: -6 * s,
                       top: -6 * s,
@@ -963,8 +1606,8 @@ class _GasStationMarkerWidgetState extends State<_GasStationMarkerWidget>
                           border: Border.all(color: Colors.white, width: 1 * s),
                           boxShadow: [
                             BoxShadow(
-                              color: Colors.black.withOpacity(0.2),
-                              blurRadius: 4,
+                              color: Colors.black.withOpacity(0.15), // Reduced opacity
+                              blurRadius: 3, // Reduced blur
                               offset: const Offset(0, 1),
                             ),
                           ],
@@ -1033,9 +1676,7 @@ class _GasStationMarkerWidgetState extends State<_GasStationMarkerWidget>
                 ],
               ),
             ),
-          );
-        },
-      ),
+          ),
     );
   }
 }

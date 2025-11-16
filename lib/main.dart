@@ -3,22 +3,24 @@ import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
-import 'firebase_options.dart';  // ← ADD THIS LINE
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-import 'screens/owner_verification_screen.dart';
+import 'firebase_options.dart';  // ← ADD THIS LINE
 import 'home_screen.dart';
+import 'screens/admin_approve_screen.dart';
+import 'screens/admin_dashboard_screen.dart';
+import 'screens/admin_login_screen.dart';
 import 'screens/analytics_screen.dart';
 import 'screens/forgot_password_screen.dart';
+import 'screens/gas_price_history_screen.dart';
 import 'screens/login_screen.dart';
 import 'screens/owner_dashboard_screen.dart';
-import 'screens/admin_approve_screen.dart';
-import 'screens/admin_login_screen.dart';
-import 'screens/owner_document_upload_screen.dart' show OwnerDocumentUploadScreen;
+import 'screens/owner_document_upload_screen.dart';
 import 'screens/owner_login_screen.dart';
 import 'screens/owner_signup_screen.dart';
+import 'screens/owner_verification_screen.dart';
 import 'screens/owner_waiting_approval_screen.dart';
 import 'screens/role_selection_screen.dart';
 import 'screens/signup_screen.dart';
@@ -71,7 +73,6 @@ class GradientTheme extends ThemeExtension<GradientTheme> {
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   debugPrint('==== Fuel-GO! Application Starting ====');
-
   try {
     await Firebase.initializeApp(
       options: DefaultFirebaseOptions.currentPlatform,  // ← ADD THIS LINE
@@ -149,7 +150,15 @@ class MyApp extends StatelessWidget {
   const MyApp({Key? key}) : super(key: key);
 
   @override
-  Widget build(BuildContext context) {
+/*************  ✨ Windsurf Command ⭐  *************/
+/// Builds the Material app widget tree.
+///
+/// This includes the main app scaffold, routes, and theme configuration.
+///
+/// The app is divided into three main sections: the login flow,
+/// the owner dashboard, and the admin approval flow.
+///
+/*******  af31154b-5e21-48eb-ad62-77953b6e3474  *******/  Widget build(BuildContext context) {
     return MaterialApp(
       title: 'Fuel-GO!',
       theme: ThemeData(
@@ -202,6 +211,18 @@ class MyApp extends StatelessWidget {
         '/owner-signup': (context) => const StatefulOwnerSignupScreen(),
         '/owner-dashboard': (context) => const StatefulOwnerDashboardScreen(),
         '/analytics': (context) => const AnalyticsScreen(),
+        '/gas-price-history': (context) {
+          final args = ModalRoute.of(context)!.settings.arguments as Map<String, dynamic>? ?? {};
+          final ownerId = args['ownerId'] as String? ?? '';
+          final assignedStations = (args['assignedStations'] as List<Map<String, dynamic>>?) ??
+              (args['assignedStations'] as List?)?.cast<Map<String, dynamic>>() ??
+              <Map<String, dynamic>>[];
+
+          return GasPriceHistoryScreen(
+            ownerId: ownerId,
+            assignedStations: assignedStations,
+          );
+        },
         '/owner-verification': (context) {
           final args = ModalRoute.of(context)!.settings.arguments as Map<String, dynamic>?;
           return StatefulScreenWrapper(
@@ -217,6 +238,17 @@ class MyApp extends StatelessWidget {
           );
         },
         '/owner-document-upload': (context) {
+          final args = ModalRoute.of(context)!.settings.arguments as Map<String, dynamic>?;
+          if (args != null) {
+            return OwnerDocumentUploadScreen(
+              userId: args['userId'] as String,
+              name: args['name'] as String? ?? '',
+              email: args['email'] as String? ?? '',
+              isGoogleUser: args['isGoogleUser'] as bool? ?? false,
+              googleCredential: args['googleCredential'] as AuthCredential?,
+              needsPasswordSetup: args['needsPasswordSetup'] as bool? ?? false,
+            );
+          }
           return const StatefulOwnerDocumentUploadScreen();
         },
         '/owner-waiting-approval': (context) {
@@ -236,6 +268,12 @@ class MyApp extends StatelessWidget {
           return StatefulScreenWrapper(
             routeName: '/admin-approval',
             child: const AdminApprovalScreen(),
+          );
+        },
+        '/admin-dashboard': (context) {
+          return StatefulScreenWrapper(
+            routeName: '/admin-dashboard',
+            child: const AdminDashboardScreen(),
           );
         },
       },
@@ -277,10 +315,10 @@ class _WebAdminWrapperState extends State<WebAdminWrapper> {
           final role = userData?['role'] as String? ?? '';
           
           if (role == 'admin') {
-            // User is admin - show approval screen
+            // User is admin - show dashboard screen
             if (mounted) {
               setState(() {
-                _targetScreen = const AdminApprovalScreen();
+                _targetScreen = const AdminDashboardScreen();
                 _isCheckingAuth = false;
               });
             }
@@ -483,6 +521,8 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
         final userRole = userData['role'] ?? 'customer';
         debugPrint('User role: $userRole');
         
+        // Role-based routing: Ensure users can only access screens appropriate for their role
+        // This is an additional security layer on top of login method restrictions
         if (userRole == 'owner') {
           // Check approval status for owners
           final approvalStatus = userData['approvalStatus'] as String? ?? '';
@@ -555,16 +595,47 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
             );
           }
         } else {
-          // Customer role - go to home
+          // Customer/user role - go to home (user screens)
+          // This ensures owners can't access customer screens and vice versa
+          debugPrint('Customer/user role detected - routing to home screen');
           return const StatefulHomeScreen();
         }
       } else {
-        debugPrint('User doc not found - defaulting to home');
-        return const StatefulHomeScreen();
+        // User doc not found - this is an orphaned Firebase Auth user
+        // Sign them out and redirect to role selection
+        debugPrint('User doc not found - orphaned Firebase Auth user detected. Signing out...');
+        try {
+          await AuthService().signOut();
+          debugPrint('Orphaned user signed out successfully');
+        } catch (e) {
+          debugPrint('Error signing out orphaned user: $e');
+        }
+        return const StatefulRoleSelectionScreen();
       }
     } catch (e) {
       debugPrint('Error getting authenticated user screen: $e');
-      // Default to home for authenticated users if there's an error
+      // If there's an error, check if user doc exists - if not, sign out
+      try {
+        final userDoc = await FirebaseFirestore.instance
+            .collection('users')
+            .doc(user.uid)
+            .get()
+            .timeout(const Duration(seconds: 2));
+        
+        if (!userDoc.exists) {
+          debugPrint('User doc not found during error handling - signing out orphaned user');
+          await AuthService().signOut();
+          return const StatefulRoleSelectionScreen();
+        }
+      } catch (_) {
+        // If we can't check, assume user might be orphaned and sign out to be safe
+        debugPrint('Could not verify user doc during error - signing out to be safe');
+        try {
+          await AuthService().signOut();
+        } catch (_) {}
+        return const StatefulRoleSelectionScreen();
+      }
+      // User doc exists but there was an error getting screen - default to home
       return const StatefulHomeScreen();
     }
   }

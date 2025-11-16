@@ -9,17 +9,10 @@ class ApiConfig {
   // For Firebase Hosting, it would be: https://your-project.web.app/admin-approval
   static const String adminPortalUrl = 'https://your-project.web.app/admin-approval';
   
-  // Auth User Deletion API Endpoint
-  // Deploy auth_delete_api.js to a free hosting service (Vercel, Netlify, etc.)
-  // Example: https://your-api.vercel.app/api/delete-auth-user
-  // Leave empty to skip Auth user deletion
-  static const String authDeleteApiUrl = ''; // Set this to your deployed API URL
-  
   // Navigation settings
   static const double defaultZoom = 14.0;
   static const double navigationZoom = 16.0;
   
-  // Valencia City, Bukidnon coordinates
-  static const double valenciaLatitude = 7.9061;
-  static const double valenciaLongitude = 125.0936;
+  // REMOVED: Default location coordinates
+  // Application should use user's current location or gas station locations
 } 

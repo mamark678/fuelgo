@@ -1,14 +1,12 @@
 // lib/screens/admin_approval_screen.dart
+// Updated to support BOTH Firebase Storage URLs AND Base64 images
+
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_auth/firebase_auth.dart';
-import 'package:firebase_storage/firebase_storage.dart';
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
 
-import '../config/api_config.dart';
-import '../services/auth_service.dart';
 import '../services/email_service.dart';
 
 class AdminApprovalScreen extends StatefulWidget {
@@ -21,7 +19,7 @@ class AdminApprovalScreen extends StatefulWidget {
 class _AdminApprovalScreenState extends State<AdminApprovalScreen> {
   final _usersRef = FirebaseFirestore.instance.collection('users');
 
-Future<void> _updateApprovalStatusAndNotify({
+  Future<void> _updateApprovalStatusAndNotify({
   required String userId,
   required String ownerEmail,
   required String ownerName,
@@ -29,23 +27,28 @@ Future<void> _updateApprovalStatusAndNotify({
   required String status,
   String? reason,
 }) async {
+  print('🔄 Starting approval status update...');
+  print('   User ID: $userId');
+  print('   Status: $status');
+  print('   Email: $ownerEmail');
+  
   try {
-    // 2) Send EmailJS email to owner notifying them FIRST (before deletion if rejected)
-      final subject = status == 'approved'
-          ? 'FuelGo Registration APPROVED - Welcome to FuelGo!'
-          : status == 'rejected'
-              ? 'FuelGo Registration REJECTED'
-              : 'FuelGo Registration - Document Review Required';
+    // Prepare email content
+    final subject = status == 'approved'
+        ? 'FuelGo Registration APPROVED - Welcome to FuelGo!'
+        : status == 'rejected'
+            ? 'FuelGo Registration REJECTED'
+            : 'FuelGo Registration - Document Review Required';
 
-      final message = status == 'approved'
-          ? '''
-<p>Dear ${ownerName},</p>
+    final message = status == 'approved'
+        ? '''
+<p>Dear $ownerName,</p>
 <p>Congratulations! Your gas station registration has been <strong>APPROVED</strong>.</p>
 <br>
 <p><strong>Your Registration Details:</strong></p>
 <ul>
-<li>Name: ${ownerName}</li>
-<li>Station: ${stationName}</li>
+<li>Name: $ownerName</li>
+<li>Station: $stationName</li>
 <li>Status: APPROVED</li>
 </ul>
 <br>
@@ -58,15 +61,15 @@ Future<void> _updateApprovalStatusAndNotify({
 The FuelGo Team<br/>
 FuelGo System Admin</p>
 '''
-          : status == 'rejected'
-              ? '''
-<p>Dear ${ownerName},</p>
+        : status == 'rejected'
+            ? '''
+<p>Dear $ownerName,</p>
 <p>Unfortunately, your gas station registration has been <strong>REJECTED</strong>.</p>
 <br>
 <p><strong>Your Registration Details:</strong></p>
 <ul>
-<li>Name: ${ownerName}</li>
-<li>Station: ${stationName}</li>
+<li>Name: $ownerName</li>
+<li>Station: $stationName</li>
 <li>Status: REJECTED</li>
 </ul>
 <br>
@@ -78,14 +81,14 @@ ${reason != null ? '<p><strong>Reason:</strong> $reason</p><br>' : ''}
 <p>Best regards,<br/>
 The FuelGo Team</p>
 '''
-          : '''
-<p>Dear ${ownerName},</p>
+        : '''
+<p>Dear $ownerName,</p>
 <p>Your registration requires document review.</p>
 <br>
 <p><strong>Details:</strong></p>
 <ul>
-<li>Name: ${ownerName}</li>
-<li>Station: ${stationName}</li>
+<li>Name: $ownerName</li>
+<li>Station: $stationName</li>
 <li>Status: NEEDS RESUBMISSION</li>
 </ul>
 <br>
@@ -97,80 +100,135 @@ The FuelGo Team</p>
 The FuelGo Team</p>
 ''';
 
-      final ok = await EmailService.sendEmail(
+    print('📧 Sending email notification...');
+    
+    // Send email notification
+    bool emailSent = false;
+    try {
+      emailSent = await EmailService.sendEmail(
         toEmail: ownerEmail,
         subject: subject,
         message: message,
       );
+      print(emailSent ? '✅ Email sent successfully' : '⚠️ Email sending returned false');
+    } catch (emailError) {
+      print('❌ Email sending failed: $emailError');
+      // Continue even if email fails
+    }
 
-      // If rejected, delete all related data AFTER sending email
-      if (status == 'rejected') {
-        try {
-          await _deleteRejectedUserData(userId);
-        } catch (deleteError) {
-          // If deletion fails, still show success for email notification
-          // but add warning about deletion failure
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-              content: Text('Email sent but data deletion failed: $deleteError'),
-              backgroundColor: Colors.orange,
-              duration: const Duration(seconds: 5),
-            ));
-          }
-          // Re-throw to be handled by outer catch
-          throw deleteError;
+    // Handle rejection - DELETE USER DATA
+    if (status == 'rejected') {
+      print('🗑️ Starting rejection process - deleting user data...');
+      
+      try {
+        await _deleteRejectedUserData(userId);
+        print('✅ Successfully deleted rejected user data');
+        
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text(emailSent 
+                ? '✅ User rejected and deleted successfully!\n📧 Email notification sent to owner.'
+                : '✅ User rejected and deleted successfully!\n⚠️ Email notification failed.'),
+            backgroundColor: emailSent ? Colors.green : Colors.orange,
+            duration: const Duration(seconds: 5),
+          ));
         }
-      } else {
-        // 1) Update Firestore with the new status AND email notification flag
+      } catch (deleteError) {
+        print('❌ Error deleting user data: $deleteError');
+        
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text('❌ Error deleting user data: $deleteError\n\nPlease try again or delete manually.'),
+            backgroundColor: Colors.red,
+            duration: const Duration(seconds: 6),
+          ));
+        }
+        
+        // Re-throw to stop execution
+        rethrow;
+      }
+    } 
+    // Handle approval or request resubmission - UPDATE FIRESTORE
+    else {
+      print('💾 Updating Firestore with new status...');
+      
+      try {
+        // Update user document
         await _usersRef.doc(userId).update({
           'approvalStatus': status,
-          'emailNotificationSent': true, // KEY: This allows future login attempts
+          'emailNotificationSent': emailSent,
           if (status == 'approved') ...{
             'approvedAt': FieldValue.serverTimestamp(),
-            'documentsSubmitted': true, // Ensure documents are marked as submitted for approved
+            'documentsSubmitted': true,
           },
           if (status == 'request_submission') ...{
             'requestSubmissionAt': FieldValue.serverTimestamp(),
-            'documentsSubmitted': false, // Reset to allow resubmission
+            'documentsSubmitted': false,
           },
           if (reason != null) 'rejectionReason': reason,
         });
-      }
-
-      if (mounted) {
-        final statusText = status == 'approved' 
-            ? 'approved' 
-            : status == 'rejected' 
-                ? 'rejected' 
-                : 'marked for resubmission';
-        if (ok) {
+        
+        // Also update all gas stations owned by this user to sync ownerApprovalStatus
+        try {
+          final stationsSnapshot = await FirebaseFirestore.instance
+              .collection('gas_stations')
+              .where('ownerId', isEqualTo: userId)
+              .get();
+          
+          final batch = FirebaseFirestore.instance.batch();
+          for (final stationDoc in stationsSnapshot.docs) {
+            batch.update(stationDoc.reference, {
+              'ownerApprovalStatus': status,
+              'lastUpdated': FieldValue.serverTimestamp(),
+            });
+          }
+          await batch.commit();
+          print('✅ Updated ${stationsSnapshot.docs.length} gas station(s) with new approval status');
+        } catch (stationUpdateError) {
+          print('⚠️ Warning: Could not update gas stations: $stationUpdateError');
+          // Don't fail the whole operation if station update fails
+        }
+        
+        print('✅ Firestore updated successfully');
+        
+        if (mounted) {
+          final statusText = status == 'approved' ? 'approved' : 'marked for resubmission';
           ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-            content: Text(status == 'rejected' 
-                ? (ApiConfig.authDeleteApiUrl.isEmpty
-                    ? 'User rejected, Firestore/Storage data deleted, and owner notified via email.\nNote: Auth user may still exist - delete manually via Firebase Console.'
-                    : 'User rejected, all data (including Auth) deleted, and owner notified via email.')
-                : 'User $statusText and owner notified via email.'),
-            backgroundColor: status == 'rejected' ? Colors.orange : Colors.green,
-            duration: const Duration(seconds: 6),
-          ));
-        } else {
-          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-            content: Text(status == 'rejected'
-                ? 'User rejected and data deleted, but email notification failed.'
-                : 'Status updated to $statusText but email notification failed.'),
-            backgroundColor: Colors.orange,
+            content: Text(emailSent
+                ? '✅ User $statusText successfully!\n📧 Email notification sent.'
+                : '✅ User $statusText successfully!\n⚠️ Email notification failed.'),
+            backgroundColor: emailSent ? Colors.green : Colors.orange,
+            duration: const Duration(seconds: 4),
           ));
         }
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text('Failed to process rejection: $e'),
-          backgroundColor: Colors.red,
-        ));
+      } catch (firestoreError) {
+        print('❌ Firestore update failed: $firestoreError');
+        
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text('❌ Failed to update status: $firestoreError'),
+            backgroundColor: Colors.red,
+          ));
+        }
+        
+        rethrow;
       }
     }
+    
+    print('✅ Approval status update completed successfully');
+  } catch (e, stackTrace) {
+    print('❌ Error in _updateApprovalStatusAndNotify: $e');
+    print('Stack trace: $stackTrace');
+    
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('❌ Operation failed: $e\n\nCheck console for details.'),
+        backgroundColor: Colors.red,
+        duration: const Duration(seconds: 6),
+      ));
+    }
   }
+}
 
   void _showApproveConfirmDialog(String userId, String email, String name, String stationName) {
     showDialog(
@@ -251,7 +309,133 @@ The FuelGo Team</p>
     );
   }
 
-  Widget _buildDocumentImageCard(String title, String imageUrl) {
+  // Universal document image card - handles BOTH URLs and base64
+  Widget _buildDocumentImageCard(String title, dynamic imageData) {
+    // Check if it's a base64 string or URL
+    final isBase64 = imageData is String && !imageData.startsWith('http');
+    
+    if (isBase64) {
+      // Handle base64 image
+      return _buildBase64ImageCard(title, imageData);
+    } else {
+      // Handle URL image
+      return _buildUrlImageCard(title, imageData);
+    }
+  }
+
+  // For base64 images stored in Firestore
+  Widget _buildBase64ImageCard(String title, String base64String) {
+    try {
+      final Uint8List bytes = base64Decode(base64String);
+      
+      return InkWell(
+        onTap: () {
+          showDialog(
+            context: context,
+            builder: (context) => Dialog(
+              child: SizedBox(
+                width: MediaQuery.of(context).size.width * 0.9,
+                height: MediaQuery.of(context).size.height * 0.8,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    AppBar(
+                      title: Text(title),
+                      leading: IconButton(
+                        icon: const Icon(Icons.close),
+                        onPressed: () => Navigator.pop(context),
+                      ),
+                    ),
+                    Expanded(
+                      child: InteractiveViewer(
+                        child: Image.memory(
+                          bytes, 
+                          fit: BoxFit.contain,
+                          errorBuilder: (context, error, stackTrace) {
+                            return const Center(
+                              child: Column(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  Icon(Icons.error_outline, color: Colors.red, size: 48),
+                                  SizedBox(height: 8),
+                                  Text('Failed to load image'),
+                                ],
+                              ),
+                            );
+                          },
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          );
+        },
+        child: Card(
+          elevation: 2,
+          child: Container(
+            width: 120,
+            height: 120,
+            padding: const EdgeInsets.all(8),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Expanded(
+                  child: Image.memory(
+                    bytes,
+                    fit: BoxFit.cover,
+                    width: double.infinity,
+                    errorBuilder: (context, error, stackTrace) => const Icon(
+                      Icons.error_outline,
+                      color: Colors.red,
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  title,
+                  style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500),
+                  textAlign: TextAlign.center,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    } catch (e) {
+      return Card(
+        elevation: 2,
+        child: Container(
+          width: 120,
+          height: 120,
+          padding: const EdgeInsets.all(8),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const Icon(Icons.broken_image, color: Colors.grey, size: 32),
+              const SizedBox(height: 4),
+              Text(
+                title,
+                style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500),
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 2),
+              const Text(
+                'Invalid image',
+                style: TextStyle(fontSize: 10, color: Colors.red),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+  }
+
+  // For URL images stored in Firebase Storage
+  Widget _buildUrlImageCard(String title, String imageUrl) {
     return InkWell(
       onTap: () {
         showDialog(
@@ -321,124 +505,80 @@ The FuelGo Team</p>
   }
 
   Future<void> _deleteRejectedUserData(String userId) async {
-    try {
-      // Get user data first to find related documents
-      final userDoc = await _usersRef.doc(userId).get();
-      if (!userDoc.exists) return;
-
-      final userData = userDoc.data() as Map<String, dynamic>?;
-      final stationId = userData?['stationId'] as String?;
-      final documentUrls = userData?['documentUrls'] as Map<String, dynamic>?;
-
-      // 1. Delete uploaded documents from Firebase Storage
-      if (documentUrls != null) {
-        try {
-          final storageRef = FirebaseStorage.instance
-              .ref()
-              .child('owner_documents')
-              .child(userId);
-
-          // Delete all files in the user's document folder
-          final listResult = await storageRef.listAll();
-          for (var item in listResult.items) {
-            try {
-              await item.delete();
-            } catch (e) {
-              print('Error deleting storage file ${item.name}: $e');
-              // Continue deleting other files even if one fails
-            }
-          }
-
-          // Also try to delete the folder itself
-          try {
-            await storageRef.delete();
-          } catch (e) {
-            // Folder might not exist or already deleted, that's okay
-            print('Note: Could not delete storage folder: $e');
-          }
-        } catch (e) {
-          print('Error deleting storage documents: $e');
-          // Continue with other deletions even if storage deletion fails
-        }
-      }
-
-      // 2. Delete gas station document if it exists
-      if (stationId != null) {
-        try {
-          await FirebaseFirestore.instance
-              .collection('gas_stations')
-              .doc(stationId)
-              .delete();
-        } catch (e) {
-          print('Error deleting gas station: $e');
-          // Continue with user deletion even if gas station deletion fails
-        }
-      }
-
-      // 3. Delete user document from Firestore
-      try {
-        await _usersRef.doc(userId).delete();
-      } catch (e) {
-        print('Error deleting user document: $e');
-        throw e; // Re-throw if user deletion fails
-      }
-
-      // 4. Delete Firebase Authentication user account via API (if configured)
-      if (ApiConfig.authDeleteApiUrl.isNotEmpty) {
-        try {
-          print('Attempting to delete Firebase Auth user via API: $userId');
-          
-          // Get current admin user's token for authentication
-          final currentUser = FirebaseAuth.instance.currentUser;
-          final adminToken = currentUser != null 
-              ? await currentUser.getIdToken() 
-              : null;
-          
-          final response = await http.post(
-            Uri.parse(ApiConfig.authDeleteApiUrl),
-            headers: {
-              'Content-Type': 'application/json',
-            },
-            body: jsonEncode({
-              'userId': userId,
-              'adminToken': adminToken,
-            }),
-          ).timeout(
-            const Duration(seconds: 30),
-            onTimeout: () {
-              throw Exception('API request timeout');
-            },
-          );
-          
-          if (response.statusCode == 200) {
-            final result = jsonDecode(response.body);
-            if (result['success'] == true) {
-              print('✅ Successfully deleted Firebase Auth user: $userId');
-            } else {
-              throw Exception(result['message'] ?? 'API returned unsuccessful result');
-            }
-          } else {
-            final errorData = jsonDecode(response.body);
-            throw Exception(errorData['message'] ?? 'API request failed with status ${response.statusCode}');
-          }
-        } catch (e) {
-          print('❌ Error deleting Firebase Auth user via API: $e');
-          // Don't throw - continue even if Auth deletion fails
-          // The Firestore and Storage data are already deleted
-          print('⚠️ Note: Firebase Auth user ($userId) may still exist. Firestore and Storage data have been deleted.');
-        }
-      } else {
-        // API URL not configured - skip Auth deletion
-        print('⚠️ Auth deletion API URL not configured. Firebase Auth user ($userId) still exists.');
-        print('⚠️ To enable Auth deletion, set ApiConfig.authDeleteApiUrl or delete manually via Firebase Console.');
-      }
-
-      print('Successfully deleted all data for rejected user: $userId');
-    } catch (e) {
-      print('Error in _deleteRejectedUserData: $e');
-      rethrow; // Re-throw to be handled by caller
+  print('🗑️ === STARTING DELETION PROCESS ===');
+  print('   User ID: $userId');
+  
+  try {
+    // Step 1: Get user document
+    print('📋 Step 1: Fetching user document...');
+    final userDoc = await _usersRef.doc(userId).get();
+    
+    if (!userDoc.exists) {
+      print('⚠️ User document does not exist: $userId');
+      print('   This might mean it was already deleted.');
+      return;
     }
+    
+    print('✅ User document found');
+    
+    final userData = userDoc.data() as Map<String, dynamic>?;
+    final stationId = userData?['stationId'] as String?;
+    final documentUrls = userData?['documentUrls'] as Map<String, dynamic>?;
+    final documentImages = userData?['documentImages'] as Map<String, dynamic>?;
+    
+    print('📊 User data summary:');
+    print('   - Station ID: $stationId');
+    print('   - Has documentUrls: ${documentUrls != null}');
+    print('   - Has documentImages (base64): ${documentImages != null}');
+
+    // Step 2: Skip Firebase Storage deletion (using base64 in Firestore instead)
+    print('⏭️ Step 2: Skipped - Documents stored as base64 in Firestore, not in Storage');
+    print('   - documentImages (base64): ${documentImages != null ? "Will be deleted with user doc" : "N/A"}');
+    print('   - documentUrls (legacy): ${documentUrls != null ? "Ignored (empty/null)" : "N/A"}');
+
+    // Step 3: Delete gas station document
+    if (stationId != null && stationId.isNotEmpty) {
+      print('🏪 Step 3: Deleting gas station document...');
+      
+      try {
+        await FirebaseFirestore.instance
+            .collection('gas_stations')
+            .doc(stationId)
+            .delete();
+        print('   ✅ Gas station deleted: $stationId');
+      } catch (e) {
+        print('   ⚠️ Could not delete gas station: $e');
+        // Continue anyway
+      }
+    } else {
+      print('⏭️ Step 3: Skipped - No station ID found');
+    }
+
+    // Step 4: Delete user document from Firestore
+    print('📄 Step 4: Deleting user document from Firestore...');
+    
+    try {
+      await _usersRef.doc(userId).delete();
+      print('   ✅ User document deleted successfully');
+    } catch (e) {
+      print('   ❌ CRITICAL: Failed to delete user document: $e');
+      throw Exception('Failed to delete user document: $e');
+    }
+
+    print('✅ === DELETION PROCESS COMPLETED ===');
+    print('   - User document (Firestore): DELETED ✅');
+    print('   - Gas station document: ${stationId != null ? "DELETED ✅" : "N/A"}');
+    print('   - Base64 images: ${documentImages != null ? "DELETED ✅ (stored in user doc)" : "N/A"}');
+    print('   - Firebase Storage: SKIPPED (not used)');
+    print('   - Firebase Auth account: PRESERVED (owner can re-register)');
+    
+  } catch (e, stackTrace) {
+    print('❌ === DELETION PROCESS FAILED ===');
+    print('   Error: $e');
+    print('   Stack trace: $stackTrace');
+    rethrow;
   }
+}
 
   void _showRejectDialog(String userId, String email, String name, String stationName) {
     final TextEditingController reasonCtrl = TextEditingController();
@@ -506,21 +646,6 @@ The FuelGo Team</p>
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Admin — Pending Registrations'),
-        backgroundColor: Colors.blue,
-        foregroundColor: Colors.white,
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.logout),
-            tooltip: 'Sign Out',
-            onPressed: () async {
-              await AuthService().signOut();
-              if (mounted) {
-                Navigator.pushReplacementNamed(context, '/admin-login');
-              }
-            },
-          ),
-        ],
       ),
       body: StreamBuilder<QuerySnapshot>(
         stream: _usersRef.where('approvalStatus', isEqualTo: 'pending').snapshots(),
@@ -553,12 +678,40 @@ The FuelGo Team</p>
               final submittedAt = data['submittedAt'] as Timestamp?;
               final submittedDate = submittedAt?.toDate().toString().split(' ')[0] ?? 'Unknown';
               
-              // Get document URLs
-              final documentUrls = data['documentUrls'] as Map<String, dynamic>?;
-              final gasStationIdUrl = documentUrls?['gasStationId'] as String?;
-              final governmentIdUrl = documentUrls?['governmentId'] as String?;
-              final businessPermitUrl = documentUrls?['businessPermit'] as String?;
-              final userIdForAuth = doc.id; // Store userId for Auth deletion reference
+              // Try to get base64 images first (NEW FORMAT)
+              final documentImages = data['documentImages'] as Map<String, dynamic>?;
+              dynamic gasStationIdData;
+              dynamic governmentIdData;
+              dynamic businessPermitData;
+
+              if (documentImages != null) {
+                // New format: base64 images in documentImages field
+                gasStationIdData = documentImages['gasStationId'] as String?;
+                governmentIdData = documentImages['governmentId'] as String?;
+                businessPermitData = documentImages['businessPermit'] as String?;
+              } else {
+                // Old format: URLs in documentUrls field (fallback)
+                final documentUrls = data['documentUrls'] as Map<String, dynamic>?;
+                if (documentUrls != null) {
+                  gasStationIdData = (documentUrls['gasStationId'] ??
+                      documentUrls['gas_station_id'] ??
+                      documentUrls['gasStation'] ??
+                      documentUrls['stationId']) as String?;
+
+                  governmentIdData = (documentUrls['governmentId'] ??
+                      documentUrls['government_id'] ??
+                      documentUrls['govId']) as String?;
+
+                  businessPermitData = (documentUrls['businessPermit'] ??
+                      documentUrls['business_permit'] ??
+                      documentUrls['permit']) as String?;
+                }
+
+                // Also check legacy/top-level fields as a fallback
+                gasStationIdData = gasStationIdData ?? data['gasStationIdUrl'] as String?;
+                governmentIdData = governmentIdData ?? data['governmentIdUrl'] as String?;
+                businessPermitData = businessPermitData ?? data['businessPermitUrl'] as String?;
+              }
 
               return Card(
                 margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
@@ -594,8 +747,8 @@ The FuelGo Team</p>
                       ),
                       const SizedBox(height: 16),
                       
-                      // Document Images Section
-                      if (gasStationIdUrl != null || governmentIdUrl != null || businessPermitUrl != null) ...[
+                      // Document Images Section (supports both URLs and base64)
+                      if (gasStationIdData != null || governmentIdData != null || businessPermitData != null) ...[
                         const Text(
                           'Submitted Documents:',
                           style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
@@ -605,13 +758,35 @@ The FuelGo Team</p>
                           spacing: 8,
                           runSpacing: 8,
                           children: [
-                            if (gasStationIdUrl != null)
-                              _buildDocumentImageCard('Gas Station ID', gasStationIdUrl),
-                            if (governmentIdUrl != null)
-                              _buildDocumentImageCard('Government ID', governmentIdUrl),
-                            if (businessPermitUrl != null)
-                              _buildDocumentImageCard('Business Permit', businessPermitUrl),
+                            if (gasStationIdData != null)
+                              _buildDocumentImageCard('Gas Station ID', gasStationIdData),
+                            if (governmentIdData != null)
+                              _buildDocumentImageCard('Government ID', governmentIdData),
+                            if (businessPermitData != null)
+                              _buildDocumentImageCard('Business Permit', businessPermitData),
                           ],
+                        ),
+                        const SizedBox(height: 16),
+                      ] else ...[
+                        Container(
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: Colors.orange.shade50,
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(color: Colors.orange.shade200),
+                          ),
+                          child: const Row(
+                            children: [
+                              Icon(Icons.warning_amber_rounded, color: Colors.orange),
+                              SizedBox(width: 8),
+                              Expanded(
+                                child: Text(
+                                  'No documents found for this submission.',
+                                  style: TextStyle(color: Colors.orange),
+                                ),
+                              ),
+                            ],
+                          ),
                         ),
                         const SizedBox(height: 16),
                       ],

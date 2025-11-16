@@ -62,7 +62,7 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<void> _initializeApp() async {
     try {
       // Fetch data first
-      await GasStationService.fetchAndCacheGasStations();
+      await GasStationService.fetchAndCacheGasStations(forceRefresh: true);
       
       // Then initialize other services
     _navigationService.addListener(_onNavigationChanged);
@@ -90,7 +90,7 @@ class _HomeScreenState extends State<HomeScreen> {
       });
 
       // Refresh gas station data
-      await GasStationService.fetchAndCacheGasStations();
+      await GasStationService.fetchAndCacheGasStations(forceRefresh: true);
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -118,32 +118,6 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  Future<void> _runDebug() async {
-    try {
-      await DebugService.debugGasStationVisibility();
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Debug information printed to console. Check your terminal/logs.'),
-            backgroundColor: Colors.blue,
-            duration: Duration(seconds: 4),
-          ),
-        );
-      }
-    } catch (e) {
-      print('Debug failed: $e');
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Debug failed: $e'),
-            backgroundColor: Colors.red,
-            duration: Duration(seconds: 3),
-          ),
-        );
-      }
-    }
-  }
-
   @override
   void dispose() {
     _navigationService.removeListener(_onNavigationChanged);
@@ -151,12 +125,8 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   void _onNavigationChanged() {
-    // If navigation is started and we're on the List tab, switch to Maps tab
-    if (_navigationService.isNavigating && _currentIndex == 2) {
-      setState(() {
-        _currentIndex = 1; // Switch to Maps tab
-      });
-    }
+    // Removed automatic tab switching - let users stay on their current tab
+    // Users can manually switch to Maps tab if they want to see navigation
   }
 
   Widget _buildBody() {

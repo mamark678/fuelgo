@@ -189,14 +189,14 @@ class _ManagePricesScreenState extends State<ManagePricesScreen> {
   String? _dieselPerformance;
 
   // Current prices from station data
-  late Map<String, dynamic> currentPrices;
+  late Map<String, double> currentPrices;
   bool _isLoading = false;
   StreamSubscription<DocumentSnapshot>? _priceListener;
 
   @override
   void initState() {
     super.initState();
-    currentPrices = Map<String, dynamic>.from(widget.station['prices'] ?? {});
+    currentPrices = _normalizePriceMap(widget.station['prices']);
     _loadCurrentPrices();
     _setupRealtimeListener();
   }
@@ -237,6 +237,30 @@ class _ManagePricesScreenState extends State<ManagePricesScreen> {
     });
   }
 
+  Map<String, double> _normalizePriceMap(dynamic source) {
+    final normalized = <String, double>{};
+    if (source is Map) {
+      source.forEach((key, value) {
+        final normalizedKey = key.toString().trim().toLowerCase();
+        if (normalizedKey.isEmpty) return;
+
+        double? parsedValue;
+        if (value is num) {
+          parsedValue = value.toDouble();
+        } else if (value != null) {
+          parsedValue = double.tryParse(value.toString());
+        }
+
+        if (parsedValue == null) return;
+        if (!parsedValue.isFinite || parsedValue.isNaN) return;
+        if (parsedValue < 0) parsedValue = 0;
+
+        normalized[normalizedKey] = parsedValue;
+      });
+    }
+    return normalized;
+  }
+
   void _setupRealtimeListener() {
     _priceListener = FirebaseFirestore.instance
         .collection('gas_stations')
@@ -249,7 +273,7 @@ class _ManagePricesScreenState extends State<ManagePricesScreen> {
         final data = snapshot.data();
         if (data != null && data['prices'] != null) {
           setState(() {
-            currentPrices = Map<String, dynamic>.from(data['prices']);
+            currentPrices = _normalizePriceMap(data['prices']);
             _loadCurrentPrices();
           });
         }
@@ -338,16 +362,7 @@ class _ManagePricesScreenState extends State<ManagePricesScreen> {
 
     // Create the complete price map for history recording
     // This should include ALL current prices (updated + existing)
-    final completeCurrentPrices = <String, double>{};
-    
-    // Add existing prices
-    for (final entry in currentPrices.entries) {
-      if (entry.value is num) {
-        completeCurrentPrices[entry.key] = (entry.value as num).toDouble();
-      }
-    }
-    
-    // Override with any updates
+    final completeCurrentPrices = Map<String, double>.from(currentPrices);
     completeCurrentPrices.addAll(updates);
 
     // First update the station document with ALL current prices (analytics needs complete data)
@@ -368,6 +383,11 @@ class _ManagePricesScreenState extends State<ManagePricesScreen> {
         prices: completeCurrentPrices, // ALL prices for consistent history
       );
     }
+
+    setState(() {
+      currentPrices = completeCurrentPrices;
+      _loadCurrentPrices();
+    });
 
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(

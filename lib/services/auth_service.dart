@@ -52,12 +52,36 @@ class AuthService {
         ...?extraData,
       };
 
-      await _db.collection('users').doc(user.uid).set(userData);
-      print('Firestore document created for user: ${user.uid}');
+      try {
+        await _db.collection('users').doc(user.uid).set(userData);
+        print('Firestore document created for user: ${user.uid}');
+      } catch (firestoreError) {
+        // If Firestore creation fails, clean up the Firebase Auth user
+        print('Firestore creation failed: $firestoreError');
+        print('Cleaning up orphaned Firebase Auth user: ${user.uid}');
+        try {
+          await user.delete();
+          print('Orphaned Firebase Auth user deleted successfully');
+        } catch (deleteError) {
+          print('Failed to delete orphaned Firebase Auth user: $deleteError');
+          // If we can't delete, at least sign out
+          try {
+            await _auth.signOut();
+          } catch (signOutError) {
+            print('Failed to sign out after Firestore error: $signOutError');
+          }
+        }
+        rethrow; // Re-throw the Firestore error
+      }
 
-      // Update displayName for AuthWrapper
+      // Update displayName for AuthWrapper (non-critical - don't fail if this fails)
       String userRole = extraData?['role'] ?? 'customer';
-      await user.updateDisplayName(userRole);
+      try {
+        await user.updateDisplayName(userRole);
+      } catch (displayNameError) {
+        // Log but don't fail - displayName update is not critical
+        print('Warning: Failed to update displayName (non-critical): $displayNameError');
+      }
 
       return user;
     }
@@ -71,6 +95,7 @@ class AuthService {
 
 
   // Login (existing) - for customers only
+  // NOTE: This method is deprecated in favor of loginCustomer() but kept for backwards compatibility
   Future<User?> login({
     required String email,
     required String password,
@@ -88,7 +113,16 @@ class AuthService {
           await signOut();
           throw Exception('Access denied. This account is registered as a gas station owner. Please use the Owner Login instead.');
         }
+        // Only allow customer/user roles
+        if (userRole != 'customer' && userRole != 'user') {
+          await signOut();
+          throw Exception('Access denied. Invalid account type.');
+        }
         await result.user!.updateDisplayName(userRole);
+      } else {
+        // If role is null, sign out for security
+        await signOut();
+        throw Exception('Access denied. Account role not found. Please contact support.');
       }
     }
 
@@ -145,6 +179,17 @@ Future<Map<String, dynamic>?> signInWithGoogleAsCustomer() async {
           await GoogleSignIn().signOut();
           throw Exception('Access denied. This Google account is registered as a gas station owner. Please use the Owner Login instead.');
         }
+        // Only allow customer/user roles
+        if (role != 'customer' && role != 'user') {
+          await signOut();
+          await GoogleSignIn().signOut();
+          throw Exception('Access denied. Invalid account type.');
+        }
+      } else {
+        // If user doc doesn't exist, sign out for security
+        await signOut();
+        await GoogleSignIn().signOut();
+        throw Exception('Access denied. Account not found. Please sign up first.');
       }
     }
 
@@ -222,9 +267,10 @@ Future<Map<String, dynamic>?> signInWithGoogleAsOwner() async {
             throw Exception('Your owner account has not been approved. Please contact admin.');
           }
         } else {
+          // User is registered as customer/user - prevent them from owner login
           await firebaseUser.updateDisplayName('customer');
           await _auth.signOut();
-          throw Exception('Access denied. This Google account is not registered as a gas station owner.');
+          throw Exception('Access denied. This Google account is registered as a regular user. Please use the User Login instead.');
         }
       } else {
         // New owner
@@ -319,10 +365,10 @@ Future<Map<String, dynamic>?> signInWithGoogleAsOwner() async {
                 };
               }
             } else {
-              // User exists but not an owner
+              // User exists but not an owner - they're registered as customer/user
               await _auth.signOut();
               await _googleSignIn.signOut();
-              throw Exception('Access denied. This Google account is not registered as a gas station owner.');
+              throw Exception('Access denied. This Google account is registered as a regular user. Please use the User Login instead.');
             }
           } else {
             // User exists in Firebase Auth but no Firestore document
@@ -454,6 +500,11 @@ Future<User?> completeGoogleOwnerAfterVerification({
 
   if (result.user != null) {
     String? userRole = await getUserRole(result.user!.uid);
+    if (userRole == null) {
+      // If role is null, sign out for security
+      await signOut();
+      throw Exception('Access denied. Account role not found. Please contact support.');
+    }
     if (userRole == 'owner') {
       // Don't block login - let the login screen handle routing based on verification status
       // This allows owners to continue their verification process
@@ -471,8 +522,9 @@ Future<User?> completeGoogleOwnerAfterVerification({
       await result.user!.updateDisplayName('owner');
       return result.user;
     } else {
+      // User is registered as customer/user - prevent them from owner login
       await signOut();
-      throw Exception('Access denied. This account is not registered as a gas station owner.');
+      throw Exception('Access denied. This account is registered as a regular user. Please use the User Login instead.');
     }
   }
 
@@ -531,9 +583,19 @@ Stream<String?> watchApprovalStatus(String uid) {
     if (result.user != null) {
       // Check if user is an owner - prevent owners from customer login
       String? userRole = await getUserRole(result.user!.uid);
+      if (userRole == null) {
+        // If role is null, sign out for security
+        await signOut();
+        throw Exception('Access denied. Account role not found. Please contact support.');
+      }
       if (userRole == 'owner') {
         await signOut();
         throw Exception('Access denied. This account is registered as a gas station owner. Please use the Owner Login instead.');
+      }
+      // Only allow customer/user roles
+      if (userRole != 'customer' && userRole != 'user') {
+        await signOut();
+        throw Exception('Access denied. Invalid account type.');
       }
       await result.user!.updateDisplayName('customer');
     }
@@ -571,8 +633,27 @@ Stream<String?> watchApprovalStatus(String uid) {
         'createdAt': FieldValue.serverTimestamp(),
       };
 
-      await _db.collection('users').doc(user.uid).set(userData);
-      await user.updateDisplayName('customer');
+      try {
+        await _db.collection('users').doc(user.uid).set(userData);
+      } catch (firestoreError) {
+        // If Firestore creation fails, sign out the user
+        print('Firestore creation failed for Google signup: $firestoreError');
+        print('Signing out Google user: ${user.uid}');
+        try {
+          await _auth.signOut();
+          await _googleSignIn.signOut();
+        } catch (signOutError) {
+          print('Failed to sign out after Firestore error: $signOutError');
+        }
+        rethrow; // Re-throw the Firestore error
+      }
+
+      // Update displayName (non-critical)
+      try {
+        await user.updateDisplayName('customer');
+      } catch (displayNameError) {
+        print('Warning: Failed to update displayName (non-critical): $displayNameError');
+      }
 
       return user;
     } catch (e) {
@@ -616,18 +697,45 @@ Stream<String?> watchApprovalStatus(String uid) {
 
       final User? user = result.user;
       if (user != null) {
-      final userData = {
-        'email': email,
-        'name': name,
-        'role': 'owner',
-        'authProvider': 'google',
-        'emailVerified': true, // Google verifies the email
-        'createdAt': FieldValue.serverTimestamp(),
-        ...?extraData,
-      };
+        final userData = {
+          'email': email,
+          'name': name,
+          'role': 'owner',
+          'authProvider': 'google',
+          'emailVerified': true, // Google verifies the email
+          'createdAt': FieldValue.serverTimestamp(),
+          ...?extraData,
+        };
 
-        await _db.collection('users').doc(user.uid).set(userData);
-        await user.updateDisplayName('owner');
+        try {
+          await _db.collection('users').doc(user.uid).set(userData);
+        } catch (firestoreError) {
+          // If Firestore creation fails, clean up the Firebase Auth user
+          print('Firestore creation failed for Google owner signup: $firestoreError');
+          print('Cleaning up orphaned Firebase Auth user: ${user.uid}');
+          try {
+            await user.delete();
+            print('Orphaned Firebase Auth user deleted successfully');
+          } catch (deleteError) {
+            print('Failed to delete orphaned Firebase Auth user: $deleteError');
+            // If we can't delete, at least sign out
+            try {
+              await _auth.signOut();
+              await _googleSignIn.signOut();
+            } catch (signOutError) {
+              print('Failed to sign out after Firestore error: $signOutError');
+            }
+          }
+          rethrow; // Re-throw the Firestore error
+        }
+
+        // Update displayName (non-critical)
+        try {
+          await user.updateDisplayName('owner');
+        } catch (displayNameError) {
+          print('Warning: Failed to update displayName (non-critical): $displayNameError');
+        }
+
         return user;
       }
 

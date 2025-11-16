@@ -46,9 +46,9 @@ class _AdminLoginScreenState extends State<AdminLoginScreen> {
           final role = userData['role'] as String? ?? '';
 
           if (role == 'admin') {
-            // Admin user - navigate to admin approval screen
+            // Admin user - navigate to admin dashboard
             if (mounted) {
-              Navigator.pushReplacementNamed(context, '/admin-approval');
+              Navigator.pushReplacementNamed(context, '/admin-dashboard');
             }
           } else {
             // Not an admin - sign out and show error

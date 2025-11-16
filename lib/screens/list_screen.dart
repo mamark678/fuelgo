@@ -1,6 +1,7 @@
   // list_screen.dart
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math' as math;
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -16,6 +17,7 @@ import '../services/auth_service.dart';
 import '../services/firestore_service.dart';
 import '../services/gas_station_service.dart' as services;
 import '../services/navigation_service.dart';
+import '../services/user_interaction_service.dart';
 import '../services/user_preferences_service.dart';
 import '../services/user_service_fixed.dart';
 import '../widgets/price_reduction_widget.dart';
@@ -48,6 +50,8 @@ class ListScreenState extends State<ListScreen> {
   StreamSubscription<QuerySnapshot>? _ratingsSubscription;
   StreamSubscription<QuerySnapshot>? _realtimePriceSubscription;
   StreamSubscription<User?>? _authStateSubscription;
+  DateTime? _lastRealtimeUpdate; // ✅ ADD THIS
+  static const _realtimeUpdateCooldown = Duration(seconds: 1); // ✅ ADD THIS
 
   Map<String, dynamic>? _arguments;
 
@@ -488,7 +492,7 @@ class ListScreenState extends State<ListScreen> {
 
   Future<void> _loadGasStations() async {
     try {
-      await services.GasStationService.fetchAndCacheGasStations();
+      await services.GasStationService.fetchAndCacheGasStations(forceRefresh: true);
       final stations = services.GasStationService.getAllGasStations();
 
       // Debug: Log all station IDs and ownerCreated flags
@@ -518,8 +522,19 @@ class ListScreenState extends State<ListScreen> {
         }
       }
 
-      _gasStations = converted;
-      _filterAndSearch();
+      // Update local station lists and apply filters so UI shows stations immediately
+      if (mounted) {
+        setState(() {
+          _gasStations = converted;
+          _filteredGasStations = List<models.GasStation>.from(converted);
+        });
+      } else {
+        _gasStations = converted;
+        _filteredGasStations = List<models.GasStation>.from(converted);
+      }
+
+      // Apply filters (search/sort/brand) to reflect user's preferences
+      _applyFilters();
 
       if (_gasStations.isEmpty && mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -542,82 +557,10 @@ class ListScreenState extends State<ListScreen> {
     }
   }
 
-  void _filterAndSearch() {
-    List<models.GasStation> filtered = List<models.GasStation>.from(_gasStations);
-
-    debugPrint('[DEBUG] _filterAndSearch: Starting with ${_gasStations.length} stations');
-    debugPrint('[DEBUG] _filterAndSearch: Selected brand: $_selectedBrand, Search query: "$_searchQuery", Sort by: $_sortBy');
-
-    if (_selectedBrand == 'Favorites') {
-      filtered = filtered.where((s) => _prefsService.isFavorite(s.id ?? '')).toList();
-      debugPrint('[DEBUG] _filterAndSearch: After favorites filter: ${filtered.length} stations');
-    } else if (_selectedBrand != 'All') {
-      filtered = filtered.where((s) => s.brand == _selectedBrand).toList();
-      debugPrint('[DEBUG] _filterAndSearch: After brand filter ($_selectedBrand): ${filtered.length} stations');
-    }
-
-    if (_searchQuery.isNotEmpty) {
-      final q = _searchQuery.toLowerCase();
-      filtered = filtered.where((station) {
-        final name = (station.name ?? '').toLowerCase();
-        final brand = (station.brand ?? '').toLowerCase();
-        final priceMatch = (station.prices?.values ?? []).any((p) => p.toString().contains(q));
-        return name.contains(q) || brand.contains(q) || priceMatch;
-      }).toList();
-      debugPrint('[DEBUG] _filterAndSearch: After search filter ("$q"): ${filtered.length} stations');
-    }
-
-    final hasLocation = _navigationService.currentLocation != null;
-    final currentLatLng = hasLocation
-        ? LatLng(_navigationService.currentLocation!.latitude!, _navigationService.currentLocation!.longitude!)
-        : null;
-
-    debugPrint('[DEBUG] _filterAndSearch: Has location: $hasLocation, Current location: $currentLatLng');
-
-    switch (_sortBy) {
-      case 'Distance':
-        if (hasLocation && currentLatLng != null) {
-          filtered.sort((a, b) {
-            final da = services.GasStationService.calculateDistance(currentLatLng, a.position ?? const LatLng(0, 0));
-            final db = services.GasStationService.calculateDistance(currentLatLng, b.position ?? const LatLng(0, 0));
-            return da.compareTo(db);
-          });
-          debugPrint('[DEBUG] _filterAndSearch: Sorted by distance');
-        } else {
-          debugPrint('[DEBUG] _filterAndSearch: Cannot sort by distance - no location available');
-        }
-        break;
-      case 'Price':
-        filtered.sort((a, b) => (a.priceAsDouble ?? 0).compareTo(b.priceAsDouble ?? 0));
-        debugPrint('[DEBUG] _filterAndSearch: Sorted by price');
-        break;
-      case 'Rating':
-        filtered.sort((a, b) {
-          final ra = (b.averageRating ?? b.rating ?? 0);
-          final rb = (a.averageRating ?? a.rating ?? 0);
-          return ra.compareTo(rb);
-        });
-        debugPrint('[DEBUG] _filterAndSearch: Sorted by rating');
-        break;
-      default:
-        debugPrint('[DEBUG] _filterAndSearch: No sorting applied');
-        break;
-    }
-
-    debugPrint('[DEBUG] _filterAndSearch: Final filtered stations: ${filtered.length}');
-    debugPrint('[DEBUG] _filterAndSearch: Checking if FG2025-506562 is in filtered list: ${filtered.any((s) => s.id == 'FG2025-506562')}');
-
-    if (_disposed || !mounted) return;
-    setState(() {
-      _filteredGasStations = filtered;
-    });
-  }
-
   Future<void> _refreshListData() async {
     try {
-      await services.GasStationService.fetchAndCacheGasStations();
-      _loadGasStations();
-      _filterAndSearch();
+      await services.GasStationService.fetchAndCacheGasStations(forceRefresh: true);
+      await _loadGasStations();
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -672,15 +615,105 @@ class ListScreenState extends State<ListScreen> {
     return normalized;
   }
 
+  // Calculate distance between two LatLng points in kilometers (Haversine)
+  double _distanceBetween(LatLng a, LatLng b) {
+    const double earthRadius = 6371; // kilometers
+    final double lat1 = a.latitude * (math.pi / 180);
+    final double lat2 = b.latitude * (math.pi / 180);
+    final double dLat = (b.latitude - a.latitude) * (math.pi / 180);
+    final double dLon = (b.longitude - a.longitude) * (math.pi / 180);
+
+    final double aa = math.sin(dLat / 2) * math.sin(dLat / 2) +
+        math.cos(lat1) * math.cos(lat2) * math.sin(dLon / 2) * math.sin(dLon / 2);
+    final double c = 2 * math.atan2(math.sqrt(aa), math.sqrt(1 - aa));
+    return earthRadius * c;
+  }
+
+  // Apply search, brand filter, and sort to _gasStations and populate _filteredGasStations
+  void _applyFilters() {
+    try {
+      List<models.GasStation> filtered = List<models.GasStation>.from(_gasStations);
+
+      // Brand filter: Favorites special case
+      if (_selectedBrand == 'Favorites') {
+        filtered = filtered.where((s) => _prefsService.isFavorite(s.id ?? '')).toList();
+      } else if (_selectedBrand != 'All') {
+        final sel = _selectedBrand.toLowerCase();
+        filtered = filtered.where((s) => (s.brand ?? '').toLowerCase() == sel).toList();
+      }
+
+      // Search filter: name, brand, or price match
+      if (_searchQuery.isNotEmpty) {
+        final q = _searchQuery.toLowerCase();
+        filtered = filtered.where((station) {
+          final name = (station.name ?? '').toLowerCase();
+          final brand = (station.brand ?? '').toLowerCase();
+          final priceMatch = (station.prices?.values ?? []).any((p) => p.toString().toLowerCase().contains(q));
+          return name.contains(q) || brand.contains(q) || priceMatch;
+        }).toList();
+      }
+
+      // Sorting
+      if (_sortBy == 'Price') {
+        filtered.sort((a, b) {
+          final pa = (a.prices?[_selectedFuelType] is num) ? (a.prices![_selectedFuelType] as num).toDouble() : double.infinity;
+          final pb = (b.prices?[_selectedFuelType] is num) ? (b.prices![_selectedFuelType] as num).toDouble() : double.infinity;
+          return pa.compareTo(pb);
+        });
+      } else if (_sortBy == 'Rating') {
+        filtered.sort((a, b) {
+          final ra = a.averageRating ?? a.rating ?? 0.0;
+          final rb = b.averageRating ?? b.rating ?? 0.0;
+          return rb.compareTo(ra);
+        });
+      } else {
+        // Default: Distance
+        if (_navigationService.currentLocation != null) {
+          final user = _navigationService.currentLocation!;
+          final LatLng userPos = LatLng(user.latitude ?? 0.0, user.longitude ?? 0.0);
+          filtered.sort((a, b) {
+            final da = _distanceBetween(userPos, a.position);
+            final db = _distanceBetween(userPos, b.position);
+            return da.compareTo(db);
+          });
+        }
+      }
+
+      if (mounted) {
+        setState(() {
+          _filteredGasStations = filtered;
+        });
+      } else {
+        _filteredGasStations = filtered;
+      }
+    } catch (e) {
+      debugPrint('Error applying filters: $e');
+    }
+  }
+
 
 
   Future<void> _onPriceTapShowPerformance(models.GasStation station, String fuelType) async {
     if (_disposed || !mounted) return;
 
+    // Track price view interaction
+    final stationId = station.id ?? '';
+    final stationName = station.name ?? 'Unknown Station';
+    final normalizedFuelType = fuelType.toLowerCase();
+    final price = station.prices?[normalizedFuelType] ?? 0.0;
+    
+    if (stationId.isNotEmpty && price > 0) {
+      UserInteractionService.trackPriceView(
+        stationId: stationId,
+        stationName: stationName,
+        fuelType: normalizedFuelType,
+        price: price,
+      );
+    }
+
     showDialog(context: context, barrierDismissible: false, builder: (context) => const Center(child: CircularProgressIndicator()));
 
     try {
-      final stationId = station.id ?? '';
       if (stationId.isEmpty) {
         Navigator.of(context).pop();
         _showSimpleAlert('No station id', 'Station ID not available for fetching performance details.');
@@ -1016,7 +1049,7 @@ else
           setState(() {
             _searchQuery = value;
           });
-          _filterAndSearch();
+          _applyFilters();
         },
       ),
     );
@@ -1054,7 +1087,6 @@ else
             onChanged: (String? newValue) {
               if (newValue != null) {
                 _prefsService.setPreferredFuelType(newValue);
-                _filterAndSearch();
               }
             },
             items: allFuelTypes.map((value) => DropdownMenuItem<String>(value: value, child: Text(value, overflow: TextOverflow.ellipsis))).toList(),
@@ -1076,7 +1108,7 @@ else
                 _searchQuery = '';
               });
               _prefsService.setPreferredFuelType('Regular');
-              _filterAndSearch();
+              _applyFilters();
             },
             icon: const Icon(Icons.refresh),
             label: const Text('Reset'),
@@ -1098,8 +1130,8 @@ else
             if (selected) {
               setState(() {
                 _sortBy = sort;
-                _filterAndSearch();
               });
+              _applyFilters();
               Navigator.pop(context);
             }
           });
@@ -1120,8 +1152,8 @@ else
             if (selected) {
               setState(() {
                 _selectedBrand = brand;
-                _filterAndSearch();
               });
+              _applyFilters();
               Navigator.pop(context);
             }
           });
@@ -1415,7 +1447,6 @@ else
   void _setupRealtimePriceListener() {
     _realtimePriceSubscription = FirebaseFirestore.instance.collection('gas_stations').snapshots().listen((snapshot) {
       if (snapshot.docs.isNotEmpty) {
-        services.GasStationService.clearCache();
         _loadGasStations();
       }
     });

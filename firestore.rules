@@ -64,7 +64,9 @@ service cloud.firestore {
                   'documentsSubmitted', 'emailVerified', 'photoURL', 
                   'stationName', 'stationId', 'stationLat', 'stationLng',
                   'submittedAt', 'verifiedAt', 'authProvider', 'linkedProviders',
-                  'googleLinked', 'tempPasswordUsed', 'pendingDocuments'
+                  'googleLinked', 'tempPasswordUsed', 'pendingDocuments',
+                  'documentImages', 'documentUrls', 'resubmittedAt', 
+                  'resubmissionCount', 'approvalStatus'
                 ]))
               // OR allow updating entire document during initial signup/verification
               || (request.resource.data.email == request.auth.token.email)
@@ -101,8 +103,9 @@ service cloud.firestore {
         && request.resource.data.ownerId is string
         && request.resource.data.ownerId == request.auth.uid;
 
-      allow update, delete: if isSignedIn()
-        && resource.data.ownerId == request.auth.uid;
+      allow update, delete: if (isSignedIn()
+        && resource.data.ownerId == request.auth.uid)
+        || isAdmin();
 
       match /ratings/{ratingId} {
         allow read: if true;
@@ -203,6 +206,5 @@ service cloud.firestore {
     match /{document=**} {
       allow read, write: if false;
     }
-  }
   }
 }

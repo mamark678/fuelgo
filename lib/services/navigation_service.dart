@@ -6,9 +6,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_polyline_points/flutter_polyline_points.dart';
 import 'package:http/http.dart' as http;
-import 'package:latlong2/latlong.dart'; // Add this
+import 'package:latlong2/latlong.dart';
 import 'package:location/location.dart';
 
+import 'location_tracking_service.dart';
 import 'voice_navigation_service.dart';
 
 class NavigationService {
@@ -19,7 +20,7 @@ class NavigationService {
   // Navigation state
   bool _isNavigating = false;
   LatLng? _destination;
-  List<Polyline> _polylines = []; // Use List<Polyline> for flutter_map
+  List<Polyline> _polylines = [];
   PolylinePoints _polylinePoints = PolylinePoints();
   LocationData? _currentLocation;
   
@@ -33,19 +34,22 @@ class NavigationService {
   double? _currentSpeed;
   List<Map<String, dynamic>> _alternativeRoutes = [];
 
-  // FIXED: Add debouncing and performance optimization
-  Timer? _updateTimer;
+  // Real-time updates with separate turn checking
   DateTime? _lastApiCall;
-  static const Duration _apiCooldown = Duration(seconds: 30); // Prevent too frequent API calls
-  static const Duration _updateInterval = Duration(seconds: 5); // Debounce location updates
+  static const Duration _apiCooldown = Duration(seconds: 30);
+  Timer? _turnCheckTimer;
+  static const Duration _turnCheckInterval = Duration(seconds: 3);
 
   // Voice navigation service
   final VoiceNavigationService _voiceService = VoiceNavigationService();
 
+  // Location tracking service for real-time updates
+  final LocationTrackingService _locationTrackingService = LocationTrackingService();
+
   // Listeners for UI updates
   final List<Function()> _listeners = [];
 
-  // FIXED: Add HTTP client with timeout
+  // HTTP client with timeout
   static final http.Client _httpClient = http.Client();
 
   // Getters
@@ -83,14 +87,12 @@ class NavigationService {
     _listeners.remove(listener);
   }
 
-  // FIXED: Optimized listener notification
+  // Optimized listener notification
   void _notifyListeners() {
-    // Use microtask to avoid blocking the main thread
     scheduleMicrotask(() {
       final listenersCopy = List<Function()>.from(_listeners);
       for (var listener in listenersCopy) {
         try {
-          // Just call the listener; let the listener handle its own mounted check if needed
           listener();
         } catch (e) {
           print('Removing faulty listener due to error: $e');
@@ -100,36 +102,31 @@ class NavigationService {
     });
   }
 
-  // FIXED: Dispose method with proper cleanup
+  // Dispose method with proper cleanup
   void dispose() {
     _listeners.clear();
-    _updateTimer?.cancel();
+    _turnCheckTimer?.cancel();
     stopNavigation();
   }
 
-  // FIXED: Optimized location updates with debouncing
+  // Real-time location updates without debouncing
   void updateLocation(LocationData location) {
     _currentLocation = location;
     _currentSpeed = location.speed;
     
     if (_isNavigating && _destination != null) {
-      // Cancel previous timer
-      _updateTimer?.cancel();
+      // Immediately update UI for real-time tracking
+      _notifyListeners();
       
-      // Debounce updates to prevent excessive API calls
-      _updateTimer = Timer(_updateInterval, () {
-        _checkNextTurn();
-        _recalculateETAWithSpeed();
-        _notifyListeners();
-      });
+      // Recalculate ETA based on current speed (non-blocking)
+      _recalculateETAWithSpeed();
     } else {
       _notifyListeners();
     }
   }
 
-  // FIXED: Improved navigation start with better error handling
+  // Improved navigation start with better error handling
   Future<void> startNavigation(LatLng destination) async {
-    // Validate destination coordinates before proceeding
     if (destination.latitude == 0.0 && destination.longitude == 0.0 ||
         destination.latitude.isNaN || destination.longitude.isNaN) {
       print('❌ Invalid destination coordinates: $destination');
@@ -147,8 +144,8 @@ class NavigationService {
     try {
       print('🚀 Starting navigation to: ${destination.latitude}, ${destination.longitude}');
       
-      // Reset all navigation state before starting
-      _updateTimer?.cancel();
+      // Reset all navigation state
+      _turnCheckTimer?.cancel();
       _isNavigating = false;
       _destination = null;
       _polylines.clear();
@@ -171,7 +168,7 @@ class NavigationService {
       _nextTurn = 'Calculating route...';
       _notifyListeners();
 
-      // Always refresh current location before navigation
+      // Get current location
       print('📍 Refreshing current location for navigation...');
       final Location location = Location();
       try {
@@ -182,7 +179,6 @@ class NavigationService {
         print('✅ Current location obtained: ${_currentLocation!.latitude}, ${_currentLocation!.longitude}');
       } catch (e) {
         print('❌ Failed to get current location: $e');
-        // Instead of throwing, reset navigation and notify listeners
         _isNavigating = false;
         _destination = null;
         _polylines.clear();
@@ -191,20 +187,25 @@ class NavigationService {
         _eta = 'Error';
         _nextTurn = 'Unable to get current location';
         _notifyListeners();
-        // Do NOT throw or rethrow here
         return;
       }
       
-      // Get route with timeout
+      // Get route
       await _getRouteToDestination();
       
-      // Voice announcement for route start
+      // Start periodic turn checking (separate from location updates)
+      _startTurnChecking();
+
+      // Start real-time location tracking for navigation updates
+      await _locationTrackingService.enableNavigationMode();
+      await _locationTrackingService.startTracking(onUpdate: updateLocation);
+
+      // Voice announcement
       _voiceService.speakRouteStart('your destination');
       
       print('✅ Navigation started successfully');
     } catch (e) {
       print('❌ Error starting navigation: $e');
-      // Reset navigation state on error
       _isNavigating = false;
       _destination = null;
       _polylines.clear();
@@ -213,14 +214,26 @@ class NavigationService {
       _eta = 'Error';
       _nextTurn = 'Navigation failed';
       _notifyListeners();
-      // Do not rethrow, just return
       return;
     }
   }
 
+  // Start periodic turn checking (separate from location updates)
+  void _startTurnChecking() {
+    _turnCheckTimer?.cancel();
+    _turnCheckTimer = Timer.periodic(_turnCheckInterval, (timer) {
+      if (_isNavigating) {
+        _checkNextTurn();
+      } else {
+        timer.cancel();
+      }
+    });
+  }
+
   // Stop navigation
   void stopNavigation() {
-    _updateTimer?.cancel();
+    _turnCheckTimer?.cancel();
+    _locationTrackingService.stopTracking();
     _isNavigating = false;
     _destination = null;
     _polylines.clear();
@@ -230,15 +243,14 @@ class NavigationService {
     _duration = '';
     _nextTurn = '';
     _currentStepIndex = 0;
-    _lastApiCall = null; // <-- Ensure cooldown resets
-    
-    // Voice announcement for route end
+    _lastApiCall = null;
+
     _voiceService.speakRouteEnd();
-    
+
     _notifyListeners();
   }
 
-  // FIXED: Optimized route fetching with better error handling
+  // Route fetching with API cooldown
   Future<void> _getRouteToDestination() async {
     if (_currentLocation == null || _destination == null) {
       print('❌ Cannot get route: missing location data');
@@ -246,7 +258,6 @@ class NavigationService {
       return;
     }
 
-    // FIXED: Implement API cooldown to prevent excessive calls
     if (_lastApiCall != null &&
         DateTime.now().difference(_lastApiCall!) < _apiCooldown) {
       print('⏰ API cooldown active, skipping request');
@@ -325,7 +336,6 @@ class NavigationService {
         final steps = leg['steps'] as List? ?? [];
         for (var step in steps) {
           try {
-            // Defensive parsing for coordinates
             final maneuverLocation = step['maneuver']?['location'];
             final geometryCoords = step['geometry'] != null && step['geometry']['coordinates'] != null
                 ? step['geometry']['coordinates'].last
@@ -413,7 +423,6 @@ class NavigationService {
           }
         } else {
           print('⚠️ No alternative routes found in API response, generating fallback alternatives');
-          // Generate fallback alternative routes based on the main route
           await _generateFallbackAlternatives(data);
         }
         print('📊 Final alternative routes count: ${_alternativeRoutes.length}');
@@ -459,35 +468,12 @@ class NavigationService {
       }
     } catch (e) {
       print('❌ Error creating polyline: $e');
-      // Don't throw error for polyline issues, continue with navigation
     }
 
-    // Always notify listeners after processing
     _notifyListeners();
   }
 
-  // FIXED: Helper method to set error values
-  void _setErrorValues() {
-    _distance = 'Error';
-    _duration = 'Error';
-    _eta = 'Error';
-    _nextTurn = 'Route unavailable';
-    _notifyListeners();
-  }
-
-  // Helper method to clean HTML instructions
-  String _cleanHtmlInstructions(String htmlString) {
-    return htmlString
-        .replaceAll(RegExp(r'<[^>]*>'), '')
-        .replaceAll('&nbsp;', ' ')
-        .replaceAll('&amp;', '&')
-        .replaceAll('&lt;', '<')
-        .replaceAll('&gt;', '>')
-        .replaceAll('&quot;', '"')
-        .trim();
-  }
-
-  // FIXED: More robust ETA calculation
+  // More robust ETA calculation
   void _calculateETA() {
     if (_duration.isEmpty || _duration == 'Error' || _duration == 'Unknown') {
       _eta = 'Unknown';
@@ -498,10 +484,8 @@ class NavigationService {
       final now = DateTime.now();
       int totalMinutes = 0;
       
-      // Parse duration string with more patterns
       final durationLower = _duration.toLowerCase().trim();
       
-      // Handle different duration formats
       if (durationLower.contains('hour')) {
         final hourMatch = RegExp(r'(\d+)\s*hour').firstMatch(durationLower);
         if (hourMatch != null) {
@@ -516,9 +500,7 @@ class NavigationService {
         }
       }
       
-      // Handle format like "45 mins", "2 hours 30 mins"
       if (totalMinutes == 0) {
-        // Try to extract just numbers followed by time units
         final allNumbers = RegExp(r'(\d+)').allMatches(durationLower);
         final numbers = allNumbers.map((m) => int.parse(m.group(1)!)).toList();
         
@@ -546,14 +528,13 @@ class NavigationService {
     }
   }
 
-  // Optimized ETA recalculation with speed
+  // Optimized ETA recalculation with speed (non-blocking)
   void _recalculateETAWithSpeed() {
     if (_currentSpeed == null || _currentSpeed! <= 0 || _distance.isEmpty) {
       return;
     }
 
     try {
-      // Extract distance in km
       final distanceText = _distance.toLowerCase()
           .replaceAll(RegExp(r'[^\d.,]'), '')
           .replaceAll(',', '.');
@@ -561,10 +542,9 @@ class NavigationService {
       final distanceKm = double.tryParse(distanceText);
       
       if (distanceKm != null && distanceKm > 0) {
-        // Convert speed from m/s to km/h
         final speedKmh = _currentSpeed! * 3.6;
         
-        if (speedKmh > 5) { // Only recalculate if moving at reasonable speed
+        if (speedKmh > 5) {
           final timeHours = distanceKm / speedKmh;
           final timeMinutes = (timeHours * 60).round();
           
@@ -593,13 +573,10 @@ class NavigationService {
       currentStep.endLocation,
     );
     
-    // If within 100 meters of turn, update next turn instruction
     if (distanceToTurn < 0.1) {
       if (_currentStepIndex < _routeSteps.length - 1) {
         _currentStepIndex++;
         _nextTurn = _routeSteps[_currentStepIndex].instruction;
-        
-        // Voice guidance for the turn
         _voiceService.speakTurnInstruction(_nextTurn);
       } else {
         _nextTurn = 'You have arrived at your destination';
@@ -607,10 +584,17 @@ class NavigationService {
       }
     }
     
-    // Voice guidance for distance updates
     if (distanceToTurn < 0.5 && distanceToTurn > 0.4) {
       _voiceService.speakDistanceUpdate(_distance, _duration);
     }
+  }
+
+  void _setErrorValues() {
+    _distance = 'Error';
+    _duration = 'Error';
+    _eta = 'Error';
+    _nextTurn = 'Route unavailable';
+    _notifyListeners();
   }
 
   // Get bounds for camera positioning
@@ -650,7 +634,6 @@ class NavigationService {
       if (legs != null && legs.isNotEmpty) {
         final leg = legs[0];
 
-        // Update main route data
         final distanceMetersRaw = leg['distance'] ?? 0.0;
         final durationSecondsRaw = leg['duration'] ?? 0.0;
         final double distanceMeters = distanceMetersRaw is int ? distanceMetersRaw.toDouble() : distanceMetersRaw;
@@ -659,7 +642,6 @@ class NavigationService {
         final durationMinutes = (durationSeconds / 60).round();
         _duration = '$durationMinutes min';
 
-        // Parse route steps
         _routeSteps.clear();
         final steps = leg['steps'] as List? ?? [];
         for (var step in steps) {
@@ -711,10 +693,8 @@ class NavigationService {
           }
         }
 
-        // Recalculate ETA
         _calculateETA();
 
-        // Set initial next turn instruction
         if (_routeSteps.isNotEmpty) {
           _nextTurn = _routeSteps[0].instruction;
           _currentStepIndex = 0;
@@ -722,7 +702,6 @@ class NavigationService {
           _nextTurn = 'Head to destination';
         }
 
-        // Update polyline
         await _createPolylineFromRoute(altRoute);
 
         print('✅ Switched to alternative route $index');
@@ -733,7 +712,6 @@ class NavigationService {
     }
   }
 
-  // Create polyline from a specific route
   Future<void> _createPolylineFromRoute(Map<String, dynamic> route) async {
     try {
       print('🗺️ Creating polyline from alternative route...');
@@ -768,7 +746,6 @@ class NavigationService {
     }
   }
 
-  // Generate fallback alternative routes when OSRM doesn't provide them
   Future<void> _generateFallbackAlternatives(Map<String, dynamic> data) async {
     try {
       print('🔄 Generating fallback alternative routes...');
@@ -780,13 +757,11 @@ class NavigationService {
         final distanceMeters = leg['distance'] ?? 0.0;
         final durationSeconds = leg['duration'] ?? 0.0;
 
-        // Create 2-3 simulated alternative routes with slight variations
-        final numAlternatives = math.min<int>(3, (distanceMeters / 1000).round()); // More alternatives for longer routes
+        final numAlternatives = math.min<int>(3, (distanceMeters / 1000).round());
 
         for (int i = 0; i < numAlternatives; i++) {
-          // Create variations in distance and duration
-          final distanceVariation = (i + 1) * 0.1; // 10%, 20%, 30% longer
-          final durationVariation = (i + 1) * 0.15; // 15%, 30%, 45% longer
+          final distanceVariation = (i + 1) * 0.1;
+          final durationVariation = (i + 1) * 0.15;
 
           final altDistance = distanceMeters * (1 + distanceVariation);
           final altDuration = durationSeconds * (1 + durationVariation);
@@ -795,15 +770,14 @@ class NavigationService {
           final durationMinutes = (altDuration / 60).round();
           final duration = '$durationMinutes min';
 
-          // Create a simulated route object
           final simulatedRoute = {
             'distance': altDistance,
             'duration': altDuration,
-            'geometry': mainRoute['geometry'], // Use same geometry for simplicity
+            'geometry': mainRoute['geometry'],
             'legs': [{
               'distance': altDistance,
               'duration': altDuration,
-              'steps': leg['steps'] ?? [], // Use same steps
+              'steps': leg['steps'] ?? [],
             }],
           };
 
@@ -821,9 +795,8 @@ class NavigationService {
     }
   }
 
-  // Calculate distance between two points (Haversine formula)
   double _calculateDistance(LatLng point1, LatLng point2) {
-    const double earthRadius = 6371; // Earth's radius in kilometers
+    const double earthRadius = 6371;
 
     double lat1 = point1.latitude * (math.pi / 180);
     double lat2 = point2.latitude * (math.pi / 180);

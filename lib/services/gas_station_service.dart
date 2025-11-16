@@ -39,41 +39,72 @@ class GasStationService {
         
         for (final stationData in firestoreStations) {
           try {
+            // Filter: Include stations from approved or pending owners (same as map)
+            // Use ownerApprovalStatus field stored in gas_station document (avoids permission issues)
+            final ownerApprovalStatus = stationData['ownerApprovalStatus'] as String? ?? 'pending';
+            
+            // Show stations from approved or pending owners (not rejected)
+            if (ownerApprovalStatus != 'approved' && ownerApprovalStatus != 'pending') {
+              print('[DEBUG] Skipping station ${stationData['id']} - owner rejected (status: $ownerApprovalStatus)');
+              continue;
+            }
+            
             print('[DEBUG] Parsing station: ${stationData['id']}');
             print('[DEBUG] Station data keys: ${stationData.keys.toList()}');
             print('[DEBUG] Station data types: ${stationData.map((k, v) => MapEntry(k, v.runtimeType))}');
 
-            // Parse position
+            // Parse position - check position, geoPoint, and location fields
             double lat = 0.0;
             double lng = 0.0;
 
-            final posRaw = stationData['position'];
-            print('[DEBUG] Position raw type: ${posRaw.runtimeType}, value: $posRaw');
+            var posRaw = stationData['position'];
+            print('[DEBUG] Position raw type: ${posRaw?.runtimeType}, value: $posRaw');
+            
+            // If position is null, check for geoPoint
+            if (posRaw == null) {
+              posRaw = stationData['geoPoint'];
+              print('[DEBUG] geoPoint type: ${posRaw?.runtimeType}, value: $posRaw');
+            }
+            
+            // If still null, check for location (used in some older documents)
+            if (posRaw == null) {
+              posRaw = stationData['location'];
+              print('[DEBUG] location type: ${posRaw?.runtimeType}, value: $posRaw');
+            }
 
             if (posRaw is GeoPoint) {
               lat = posRaw.latitude;
               lng = posRaw.longitude;
+              print('[DEBUG] Parsed position from GeoPoint: lat=$lat, lng=$lng');
             } else if (posRaw is Map) {
               lat = (posRaw['latitude'] ?? posRaw['lat'] ?? 0.0).toDouble();
               lng = (posRaw['longitude'] ?? posRaw['lng'] ?? posRaw['lon'] ?? 0.0).toDouble();
+              print('[DEBUG] Parsed position from Map: lat=$lat, lng=$lng');
             } else if (stationData['latitude'] != null && stationData['longitude'] != null) {
               lat = (stationData['latitude'] as num).toDouble();
               lng = (stationData['longitude'] as num).toDouble();
+              print('[DEBUG] Parsed position from direct fields: lat=$lat, lng=$lng');
+            } else {
+              print('[DEBUG] WARNING: No position data found for station ${stationData['id']}');
             }
 
             // Parse prices
+            final prices = <String, double>{};
             final pricesRaw = stationData['prices'] ?? {};
-            final Map<String, double> prices = {};
             if (pricesRaw is Map) {
               pricesRaw.forEach((key, value) {
-                if (value != null) {
-                  if (value is num) {
-                    prices[key.toString()] = value.toDouble();
-                  } else if (value is String) {
-                    final parsed = double.tryParse(value);
-                    if (parsed != null) prices[key.toString()] = parsed;
-                  }
+                final normalizedKey = key.toString().trim().toLowerCase();
+                if (normalizedKey.isEmpty) return;
+                double? parsed;
+                if (value is num) {
+                  parsed = value.toDouble();
+                } else if (value != null) {
+                  parsed = double.tryParse(value.toString());
                 }
+                if (parsed == null) return;
+                if (!parsed.isFinite || parsed.isNaN) return;
+                if (parsed < 0) parsed = 0;
+                prices[normalizedKey] = parsed;
               });
             }
 
@@ -178,13 +209,15 @@ class GasStationService {
         print('[DEBUG] Station IDs: ${stations.map((s) => s.id).toList()}');
         print('[DEBUG] Checking for specific station FG2025-506562: ${stations.any((s) => s.id == 'FG2025-506562')}');
       } else {
-        // Fallback to sample data if no stations in Firestore
-        _gasStations = _getSampleGasStations();
-        print('[DEBUG] Using sample gas stations (no stations in Firestore)');
+        // No stations in Firestore - map starts empty
+        // Gas stations will only appear when owners register and are approved
+        _gasStations = [];
+        print('[DEBUG] No gas stations in Firestore - map will be empty until owners register and are approved');
       }
     } catch (e) {
       print('[ERROR] Error loading gas stations: $e');
-      _gasStations = _getSampleGasStations();
+      // No fallback to sample stations - map starts empty
+      _gasStations = [];
     } finally {
       _isFetching = false;
     }
@@ -196,6 +229,9 @@ class GasStationService {
     print('[DEBUG] GasStationService cache cleared');
   }
 
+  // COMMENTED OUT: Default sample gas stations in Valencia City
+  // Gas stations should only appear when owners register and are approved
+  /*
   static List<GasStation> _getSampleGasStations() {
     return [
       GasStation(
@@ -228,7 +264,11 @@ class GasStationService {
       ),
     ];
   }
+  */
 
+  // COMMENTED OUT: Randomizer for gas station prices
+  // Prices should come from actual gas station owners, not randomized
+  /*
   // Helper to generate some random prices as a fallback
   static Map<String, double> _generateFuelPrices() {
     final random = math.Random();
@@ -238,6 +278,7 @@ class GasStationService {
       'Diesel': 55 + random.nextDouble() * 5,
     };
   }
+  */
 
   // Get gas stations by brand
   static List<GasStation> getGasStationsByBrand(String brand) {

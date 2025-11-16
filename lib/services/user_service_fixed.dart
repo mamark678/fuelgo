@@ -9,10 +9,20 @@ class UserServiceFixed {
     try {
       final userDoc = await _db.collection('users').doc(userId).get();
       if (userDoc.exists) {
-        return userDoc.data() as Map<String, dynamic>;
+        final data = userDoc.data();
+        if (data == null) return null;
+        // Ensure proper typed map is returned
+        return Map<String, dynamic>.from(data as Map);
       }
       return null;
     } catch (e) {
+      // Handle permission errors gracefully - users may not have permission to read other user documents
+      if (e.toString().contains('PERMISSION_DENIED') || 
+          e.toString().contains('permission-denied') ||
+          e.toString().contains('Missing or insufficient permissions')) {
+        // This is expected - don't log as error
+        return null;
+      }
       print('Error fetching user data: $e');
       return null;
     }
@@ -73,14 +83,30 @@ class UserServiceFixed {
         return {for (var id in userIds) id: 'User'};
       }
 
-      final usersSnapshot = await _db
-          .collection('users')
-          .where(FieldPath.documentId, whereIn: validUserIds)
-          .get();
+      QuerySnapshot usersSnapshot;
+      try {
+        usersSnapshot = await _db
+            .collection('users')
+            .where(FieldPath.documentId, whereIn: validUserIds)
+            .get();
+      } catch (error) {
+        // Handle permission errors gracefully - users may not have permission to read all user documents
+        if (error.toString().contains('PERMISSION_DENIED') || 
+            error.toString().contains('permission-denied') ||
+            error.toString().contains('Missing or insufficient permissions')) {
+          print('Permission denied fetching user names (this is expected for some users)');
+          // Return default names for all user IDs
+          return {for (var id in userIds) id: 'User'};
+        }
+        // Re-throw other errors
+        throw error;
+      }
 
       for (var doc in usersSnapshot.docs) {
-        final data = doc.data();
-        userNames[doc.id] = data['name'] ?? 'User';
+        final dataObj = doc.data();
+        // doc.data() can be Map<String, dynamic> or null depending on API/version, cast safely
+        final Map<String, dynamic>? data = (dataObj is Map) ? Map<String, dynamic>.from(dataObj) : null;
+        userNames[doc.id] = (data?['name'] as String?) ?? 'User';
       }
 
       // Fill missing user IDs

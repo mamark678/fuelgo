@@ -154,13 +154,36 @@ class GasStation {
   }
 
   factory GasStation.fromMap(Map<String, dynamic> map) {
-    // Parse position
+    // Parse position - check 'position', 'geoPoint', and 'location' fields
     LatLng position;
-    final posRaw = map['position'];
+    var posRaw = map['position'];
+    
+    // If position is null, check for geoPoint
+    if (posRaw == null) {
+      posRaw = map['geoPoint'];
+    }
+    
+    // If still null, check for location (used in some older documents)
+    if (posRaw == null) {
+      posRaw = map['location'];
+    }
+    
     if (posRaw is Map) {
       final lat = (posRaw['latitude'] ?? posRaw['lat'] ?? 0.0).toDouble();
       final lng = (posRaw['longitude'] ?? posRaw['lng'] ?? posRaw['lon'] ?? 0.0).toDouble();
       position = LatLng(lat, lng);
+    } else if (posRaw != null) {
+      // Handle GeoPoint type directly (if passed from Firestore)
+      try {
+        final geo = posRaw as dynamic;
+        if (geo.latitude != null && geo.longitude != null) {
+          position = LatLng(geo.latitude.toDouble(), geo.longitude.toDouble());
+        } else {
+          position = const LatLng(0, 0);
+        }
+      } catch (e) {
+        position = const LatLng(0, 0);
+      }
     } else {
       position = const LatLng(0, 0);
     }
@@ -170,7 +193,7 @@ class GasStation {
       name: map['name']?.toString(),
       position: position,
       brand: map['brand']?.toString(),
-      prices: map['prices']?.cast<String, double>(),
+      prices: _normalizePrices(map['prices']),
       rating: map['rating']?.toDouble(),
       isOpen: map['isOpen'] ?? true,
       address: map['address']?.toString(),
@@ -207,6 +230,33 @@ class GasStation {
       'ratings': ratings,
       'averageRating': averageRating,
     };
+  }
+
+  static Map<String, double>? _normalizePrices(dynamic prices) {
+    if (prices == null) return null;
+    if (prices is Map<String, double>) return Map<String, double>.from(prices);
+    if (prices is Map) {
+      final normalized = <String, double>{};
+      prices.forEach((key, value) {
+        final normalizedKey = key.toString().trim().toLowerCase();
+        if (normalizedKey.isEmpty) return;
+
+        double? parsedValue;
+        if (value is num) {
+          parsedValue = value.toDouble();
+        } else if (value != null) {
+          parsedValue = double.tryParse(value.toString());
+        }
+
+        if (parsedValue == null) return;
+        if (!parsedValue.isFinite || parsedValue.isNaN) return;
+        if (parsedValue < 0) parsedValue = 0;
+
+        normalized[normalizedKey] = parsedValue;
+      });
+      return normalized;
+    }
+    return null;
   }
 
   @override

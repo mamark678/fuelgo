@@ -146,12 +146,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ListTile(
             leading: const Icon(Icons.local_gas_station),
             title: const Text('FuelGo'),
-            subtitle: const Text('Gas station finder for Valencia City'),
+            subtitle: const Text('Gas station finder application'),
           ),
           ListTile(
             leading: const Icon(Icons.location_city),
             title: const Text('Coverage Area'),
-            subtitle: const Text('Valencia City, Bukidnon, Mindanao'),
+            subtitle: const Text('All registered gas stations'),
           ),
           ListTile(
             leading: const Icon(Icons.api),

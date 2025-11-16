@@ -114,17 +114,16 @@ class _OwnerSignupScreenState extends State<OwnerSignupScreen> with RouteAware {
     _debugLog('Generated station ID: $stationId');
 
     try {
+      // Use station name as address if no specific address is provided
+      final address = _selectedStationName ?? 'Location: ${_selectedLatLng!.latitude.toStringAsFixed(6)}, ${_selectedLatLng!.longitude.toStringAsFixed(6)}';
+      
       await FirestoreService.createOrUpdateGasStation(
         stationId: stationId,
         name: _selectedStationName!,
         brand: 'Shell',
         position: _selectedLatLng!,
-        address: 'Valencia City, Bukidnon',
-        prices: {
-          'Regular': 55.50,
-          'Premium': 60.00,
-          'Diesel': 52.00,
-        },
+        address: address, // Use station name or coordinates
+        prices: const <String, double>{},
         ownerId: userId,
         stationName: _selectedStationName,
       );
@@ -169,6 +168,98 @@ class _OwnerSignupScreenState extends State<OwnerSignupScreen> with RouteAware {
     });
 
     try {
+      // First, check if email already exists in Auth (for rejected users)
+      try {
+        final signInMethods = await FirebaseAuth.instance.fetchSignInMethodsForEmail(email);
+        if (signInMethods.isNotEmpty) {
+          // Email exists in Auth - check if it's a rejected user (no Firestore doc)
+          _debugLog('⚠️ Email exists in Auth, checking if rejected user...');
+          
+          // Try to sign in with the provided password to get the user ID
+          try {
+            final signInResult = await FirebaseAuth.instance.signInWithEmailAndPassword(
+              email: email,
+              password: password,
+            );
+            
+            if (signInResult.user != null) {
+              final user = signInResult.user!;
+              final userDoc = await FirebaseFirestore.instance
+                  .collection('users')
+                  .doc(user.uid)
+                  .get();
+              
+              // If no Firestore document exists, this is a rejected user trying to re-register
+              if (!userDoc.exists) {
+                _debugLog('✅ Rejected user detected - skipping verification, going to document upload');
+                
+                // Create a minimal Firestore document to mark as pending
+                // This replaces any existing document (if any) for rejected users
+                await FirebaseFirestore.instance.collection('users').doc(user.uid).set({
+                  'email': email,
+                  'name': name,
+                  'role': 'owner',
+                  'authProvider': 'email',
+                  'emailVerified': true, // Skip verification for rejected users re-registering
+                  'approvalStatus': 'pending',
+                  'pendingDocuments': true,
+                  'createdAt': FieldValue.serverTimestamp(),
+                });
+                
+                if (mounted) {
+                  Navigator.pushReplacementNamed(
+                    context,
+                    '/owner-document-upload',
+                    arguments: {
+                      'userId': user.uid,
+                      'name': name,
+                      'email': email,
+                      'isGoogleUser': false,
+                      'googleCredential': null,
+                      'needsPasswordSetup': false,
+                    },
+                  );
+                }
+                return;
+              } else {
+                // Firestore doc exists - regular existing account
+                await FirebaseAuth.instance.signOut();
+                setState(() {
+                  _error = 'This email is already registered. Please login or use "Forgot Password".';
+                  _isLoading = false;
+                });
+                return;
+              }
+            }
+          } on FirebaseAuthException catch (signInError) {
+            // Wrong password or other sign-in error
+            if (signInError.code == 'wrong-password' || signInError.code == 'invalid-credential') {
+              // For rejected users, we need to handle wrong password differently
+              // Check if there's no Firestore doc - if so, allow password reset or show helpful message
+              try {
+                // Try to get user by email (this is a workaround - we'll check Firestore)
+                // Since we can't get UID without password, we'll show a helpful error
+                setState(() {
+                  _error = 'This email is already registered but the password is incorrect.\n\nIf you were previously rejected, please use "Forgot Password" to reset it, or contact support.';
+                  _isLoading = false;
+                });
+              } catch (e) {
+                setState(() {
+                  _error = 'This email is already registered. Please use the correct password or use "Forgot Password" to reset it.';
+                  _isLoading = false;
+                });
+              }
+              return;
+            }
+            // For other errors, continue with signup attempt
+            _debugLog('⚠️ Sign-in failed but continuing: ${signInError.code}');
+          }
+        }
+      } catch (e) {
+        // If fetchSignInMethodsForEmail fails, continue with normal signup
+        _debugLog('⚠️ Could not check email existence: $e');
+      }
+
       _debugLog('🚀 Calling AuthService().signUpOwner()');
 
       User? user = await AuthService().signUpOwner(
@@ -249,7 +340,70 @@ class _OwnerSignupScreenState extends State<OwnerSignupScreen> with RouteAware {
           msg = 'Too many attempts. Please wait a moment and try again.';
         }
       } else if (e.code == 'email-already-in-use') {
-        msg = 'This email is already registered. Please login or use "Forgot Password".';
+        // This should not happen now since we check before signup,
+        // but keep as fallback - try to sign in and check if it's a rejected user
+        _debugLog('⚠️ email-already-in-use caught - attempting to sign in to check if rejected user...');
+        try {
+          final signInResult = await FirebaseAuth.instance.signInWithEmailAndPassword(
+            email: email,
+            password: password,
+          );
+          
+          if (signInResult.user != null) {
+            final user = signInResult.user!;
+            final userDoc = await FirebaseFirestore.instance
+                .collection('users')
+                .doc(user.uid)
+                .get();
+            
+            // If no Firestore document exists, this is a rejected user trying to re-register
+            if (!userDoc.exists) {
+              _debugLog('✅ Rejected user detected via error handler - skipping verification, going to document upload');
+              
+              // Create a minimal Firestore document to mark as pending
+              await FirebaseFirestore.instance.collection('users').doc(user.uid).set({
+                'email': email,
+                'name': name,
+                'role': 'owner',
+                'authProvider': 'email',
+                'emailVerified': true, // Skip verification for rejected users re-registering
+                'approvalStatus': 'pending',
+                'pendingDocuments': true,
+                'createdAt': FieldValue.serverTimestamp(),
+              });
+              
+              if (mounted) {
+                Navigator.pushReplacementNamed(
+                  context,
+                  '/owner-document-upload',
+                  arguments: {
+                    'userId': user.uid,
+                    'name': name,
+                    'email': email,
+                    'isGoogleUser': false,
+                    'googleCredential': null,
+                    'needsPasswordSetup': false,
+                  },
+                );
+              }
+              return;
+            } else {
+              // Firestore doc exists - regular existing account
+              await FirebaseAuth.instance.signOut();
+              msg = 'This email is already registered. Please login or use "Forgot Password".';
+            }
+          }
+        } on FirebaseAuthException catch (signInError) {
+          // Wrong password
+          if (signInError.code == 'wrong-password' || signInError.code == 'invalid-credential') {
+            msg = 'This email is already registered but the password is incorrect.\n\nIf you were previously rejected, please use "Forgot Password" to reset it.';
+          } else {
+            msg = 'This email is already registered. Please login or use "Forgot Password".';
+          }
+        } catch (e) {
+          // Other errors - show generic message
+          msg = 'This email is already registered. Please login or use "Forgot Password".';
+        }
       } else if (e.code == 'weak-password') {
         msg = 'The password provided is too weak.';
       } else if (e.code == 'operation-not-allowed') {

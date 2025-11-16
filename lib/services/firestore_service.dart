@@ -21,28 +21,171 @@ class FirestoreService {
     String? stationName,
   }) async {
     try {
-      await gasStationsCollection.doc(stationId).set({
-        'name': name,
-        'brand': brand,
-        'position': {
-          'latitude': position.latitude,
-          'longitude': position.longitude,
-        },
-        'address': address,
-        'prices': prices,
-        'ownerId': ownerId,
-        'stationName': stationName ?? name,
-        'rating': 0.0,
+      // Validate inputs
+      if (stationId.isEmpty || stationId.trim().isEmpty) {
+        throw Exception('Station ID cannot be empty');
+      }
+      
+      // Validate stationId format (Firestore document IDs cannot contain certain characters)
+      if (stationId.contains('/') || stationId.contains('\\') || 
+          stationId.contains('..') || stationId.length > 1500) {
+        throw Exception('Invalid station ID format');
+      }
+      
+      if (name.isEmpty || name.trim().isEmpty) {
+        throw Exception('Station name cannot be empty');
+      }
+      if (brand.isEmpty || brand.trim().isEmpty) {
+        throw Exception('Brand cannot be empty');
+      }
+      if (ownerId.isEmpty || ownerId.trim().isEmpty) {
+        throw Exception('Owner ID cannot be empty');
+      }
+      if (address.isEmpty || address.trim().isEmpty) {
+        throw Exception('Address cannot be empty');
+      }
+      
+      // Validate position coordinates
+      if (position.latitude.isNaN || position.latitude.isInfinite ||
+          position.longitude.isNaN || position.longitude.isInfinite) {
+        throw Exception('Invalid position coordinates');
+      }
+      
+      // Validate GeoPoint bounds
+      if (position.latitude < -90 || position.latitude > 90 ||
+          position.longitude < -180 || position.longitude > 180) {
+        throw Exception('Position coordinates out of valid range');
+      }
+      
+      // Check if station already exists (resubmission case)
+      final stationDoc = await gasStationsCollection.doc(stationId).get();
+      final bool isExistingStation = stationDoc.exists;
+      
+      // Get owner's approval status to store in station document
+      // Only try to fetch if we have permission (this is called by owners when creating stations)
+      String ownerApprovalStatus = 'pending';
+      try {
+        final userDoc = await usersCollection.doc(ownerId).get();
+        if (userDoc.exists) {
+          final userData = userDoc.data() as Map<String, dynamic>?;
+          ownerApprovalStatus = userData?['approvalStatus'] as String? ?? 'pending';
+        }
+      } catch (e) {
+        // Silently handle permission errors - this is expected when non-owners try to access owner data
+        // Default to pending if we can't fetch (permission denied is OK here)
+        if (e.toString().contains('PERMISSION_DENIED') || e.toString().contains('permission-denied')) {
+          // This is expected - non-owners shouldn't be able to read owner approval status
+          // The ownerApprovalStatus field should already be set in the station document
+          print('Note: Cannot access owner approval status (permission denied - this is expected for non-owners)');
+        } else {
+          print('Warning: Could not fetch owner approval status: $e');
+        }
+        // Default to pending if we can't fetch
+      }
+      
+      // Prepare update data with validation
+      // Convert LatLng to GeoPoint for Firestore (required for geolocation queries)
+      final GeoPoint geoPoint = GeoPoint(position.latitude, position.longitude);
+      
+      // Debug: Log the position being stored
+      print('[DEBUG] Storing position as geoPoint: lat=${position.latitude}, lng=${position.longitude}');
+      
+      // Clean prices map - ensure all values are valid doubles and keys are valid
+      // Allow empty prices - stations can be created without prices (owner will set them later)
+      final Map<String, double> cleanPrices = _normalizePrices(prices);
+      
+      // Allow empty prices - stations can be created without prices
+      // Owner will set prices later through the manage prices screen
+      
+      // Ensure stationName is not null or empty
+      final finalStationName = (stationName?.isNotEmpty == true) ? stationName! : name;
+      
+      // Ensure ownerApprovalStatus is valid
+      final validApprovalStatus = ['pending', 'approved', 'rejected'].contains(ownerApprovalStatus) 
+          ? ownerApprovalStatus 
+          : 'pending';
+      
+      // Build update data with all values validated and trimmed
+      final Map<String, dynamic> updateData = {
+        'name': name.trim(),
+        'brand': brand.trim(),
+        'geoPoint': geoPoint, // Use GeoPoint for geolocation queries
+        'position': {'latitude': position.latitude, 'longitude': position.longitude}, // Also store as Map for compatibility
+        'address': address.trim(),
+        'prices': cleanPrices,
+        'ownerId': ownerId.trim(),
+        'stationName': finalStationName.trim(),
         'isOpen': true,
-        'services': [], // Keep for backward compatibility
-        'amenities': [], // Add amenities field for consistency
-        'offers': [],
-        'vouchers': [],
         'isOwnerCreated': true, // Mark as owner-created
+        'ownerApprovalStatus': validApprovalStatus, // Store owner's approval status
         'lastUpdated': FieldValue.serverTimestamp(),
-        'createdAt': FieldValue.serverTimestamp(),
-      }, SetOptions(merge: true));
+      };
+      
+      // Only initialize empty arrays for NEW stations (not resubmissions)
+      // This preserves existing amenities, offers, and vouchers during resubmission
+      if (!isExistingStation) {
+        updateData['rating'] = 0.0;
+        updateData['services'] = []; // Empty list
+        updateData['amenities'] = []; // Empty list
+        updateData['offers'] = []; // Empty list
+        updateData['vouchers'] = []; // Empty list
+        updateData['createdAt'] = FieldValue.serverTimestamp();
+      }
+      // For existing stations (resubmissions), we don't reset amenities/offers/vouchers
+      // They will be preserved from the existing document
+      
+      // Debug: Print the data being sent (without sensitive info)
+      print('[DEBUG] Creating/updating gas station:');
+      print('[DEBUG]   stationId: $stationId');
+      print('[DEBUG]   name: $name');
+      print('[DEBUG]   brand: $brand');
+      print('[DEBUG]   position: (${position.latitude}, ${position.longitude})');
+      print('[DEBUG]   ownerId: $ownerId');
+      print('[DEBUG]   prices: $cleanPrices');
+      print('[DEBUG]   updateData keys: ${updateData.keys.toList()}');
+      print('[DEBUG]   isExistingStation: $isExistingStation');
+      
+      // Try to set the document
+      try {
+        // Use set without merge for new documents, merge for updates
+        if (isExistingStation) {
+          // For existing documents, use merge to preserve existing fields
+          print('[DEBUG] Updating existing document with merge');
+          await gasStationsCollection.doc(stationId).set(updateData, SetOptions(merge: true));
+        } else {
+          // For new documents, set directly (no merge needed)
+          print('[DEBUG] Creating new document');
+          await gasStationsCollection.doc(stationId).set(updateData);
+        }
+        print('[DEBUG] Gas station document set successfully');
+      } catch (firestoreError) {
+        // Additional error details for debugging
+        print('[ERROR] Firestore operation failed');
+        print('[ERROR] Error: $firestoreError');
+        print('[ERROR] Error type: ${firestoreError.runtimeType}');
+        
+        // Print each field being set to help identify the problematic one
+        print('[ERROR] Fields being set:');
+        updateData.forEach((key, value) {
+          print('[ERROR]   $key: ${value.runtimeType} = $value');
+        });
+        
+        if (firestoreError is FirebaseException) {
+          print('[ERROR] Firebase error code: ${firestoreError.code}');
+          print('[ERROR] Firebase error message: ${firestoreError.message}');
+          print('[ERROR] Firebase error plugin: ${firestoreError.plugin}');
+        }
+        
+        rethrow;
+      }
     } catch (e) {
+      print('[ERROR] Failed to create/update gas station: $e');
+      print('[ERROR] Error type: ${e.runtimeType}');
+      if (e is FirebaseException) {
+        print('[ERROR] Firebase error code: ${e.code}');
+        print('[ERROR] Firebase error message: ${e.message}');
+      }
+      // Wrap in a more descriptive exception
       throw Exception('Failed to create/update gas station: $e');
     }
   }
@@ -977,7 +1120,9 @@ static Future<void> redeemVoucher({
         print('[DEBUG] FirestoreService.getAllGasStations: 3. Network connectivity issues');
       }
 
-      final stations = querySnapshot.docs.map((doc) {
+      final stations = <Map<String, dynamic>>[];
+      
+      for (final doc in querySnapshot.docs) {
         final data = doc.data() as Map<String, dynamic>;
         data['id'] = doc.id;
 
@@ -987,10 +1132,174 @@ static Future<void> redeemVoucher({
         print('[DEBUG] FirestoreService.getAllGasStations: ownerId value: ${data['ownerId']}');
 
         // Handle GeoPoint -> Map
-        if (data['position'] is GeoPoint) {
+        // Check 'geoPoint', 'position', and 'location' fields (location is used in some older documents)
+        print('[DEBUG] Station ${doc.id}: Checking position fields...');
+        print('[DEBUG] Station ${doc.id}: geoPoint type: ${data['geoPoint']?.runtimeType}, value: ${data['geoPoint']}');
+        print('[DEBUG] Station ${doc.id}: position type: ${data['position']?.runtimeType}, value: ${data['position']}');
+        print('[DEBUG] Station ${doc.id}: location type: ${data['location']?.runtimeType}, value: ${data['location']}');
+        
+        if (data['geoPoint'] is GeoPoint) {
+          final geo = data['geoPoint'] as GeoPoint;
+          data['position'] = {'latitude': geo.latitude, 'longitude': geo.longitude};
+          print('[DEBUG] FirestoreService.getAllGasStations: Converted geoPoint to position Map for station ${doc.id}: lat=${geo.latitude}, lng=${geo.longitude}');
+        } else if (data['position'] is GeoPoint) {
           final geo = data['position'] as GeoPoint;
           data['position'] = {'latitude': geo.latitude, 'longitude': geo.longitude};
-          print('[DEBUG] FirestoreService.getAllGasStations: Converted GeoPoint to Map for station ${doc.id}');
+          print('[DEBUG] FirestoreService.getAllGasStations: Converted position GeoPoint to Map for station ${doc.id}: lat=${geo.latitude}, lng=${geo.longitude}');
+        } else if (data['location'] is GeoPoint) {
+          // Handle 'location' field (used in some older documents)
+          final geo = data['location'] as GeoPoint;
+          data['position'] = {'latitude': geo.latitude, 'longitude': geo.longitude};
+          print('[DEBUG] FirestoreService.getAllGasStations: Converted location GeoPoint to position Map for station ${doc.id}: lat=${geo.latitude}, lng=${geo.longitude}');
+          
+          // Also update the document to use the standard field names (optional - may fail if no permission)
+          try {
+            await gasStationsCollection.doc(doc.id).update({
+              'geoPoint': geo,
+              'position': data['position'],
+            });
+            print('[DEBUG] Updated station document to use geoPoint and position fields');
+          } catch (e) {
+            // Permission denied is OK - the position is still available in the data
+            print('[DEBUG] Could not update station document (permission denied is OK): $e');
+          }
+        } else if (data['geoPoint'] != null && data['position'] == null) {
+          // If geoPoint exists but position doesn't, copy it
+          if (data['geoPoint'] is Map) {
+            data['position'] = data['geoPoint'];
+            print('[DEBUG] FirestoreService.getAllGasStations: Copied geoPoint Map to position for station ${doc.id}');
+          }
+        } else if (data['geoPoint'] == null && data['position'] == null && data['location'] == null) {
+          print('[DEBUG] WARNING: Station ${doc.id} has no position or geoPoint field!');
+          // Try to get position from stationLat/stationLng if available (from user document)
+          if (data['stationLat'] != null && data['stationLng'] != null) {
+            data['position'] = {
+              'latitude': (data['stationLat'] as num).toDouble(),
+              'longitude': (data['stationLng'] as num).toDouble(),
+            };
+            print('[DEBUG] Using stationLat/stationLng for position: lat=${data['stationLat']}, lng=${data['stationLng']}');
+          } else {
+            // Try to get position from owner's user document
+            final ownerId = data['ownerId'] as String?;
+            if (ownerId != null && ownerId.isNotEmpty) {
+              try {
+                final userDoc = await usersCollection.doc(ownerId).get();
+                if (userDoc.exists) {
+                  final userData = userDoc.data() as Map<String, dynamic>?;
+                  final stationLat = userData?['stationLat'];
+                  final stationLng = userData?['stationLng'];
+                  if (stationLat != null && stationLng != null) {
+                    final lat = (stationLat as num).toDouble();
+                    final lng = (stationLng as num).toDouble();
+                    
+                    // Validate coordinates are reasonable (Philippines bounds: lat ~5-20, lng ~115-127)
+                    // If coordinates seem swapped or out of bounds, try swapping them
+                    bool coordinatesValid = (lat >= 4.0 && lat <= 21.0 && lng >= 115.0 && lng <= 128.0);
+                    bool mightBeSwapped = (lng >= 4.0 && lng <= 21.0 && lat >= 115.0 && lat <= 128.0);
+                    
+                    double finalLat = lat;
+                    double finalLng = lng;
+                    
+                    if (!coordinatesValid && mightBeSwapped) {
+                      print('[DEBUG] WARNING: Coordinates appear to be swapped! Swapping lat/lng...');
+                      finalLat = lng;
+                      finalLng = lat;
+                      print('[DEBUG] Original: lat=$lat, lng=$lng');
+                      print('[DEBUG] Swapped: lat=$finalLat, lng=$finalLng');
+                    }
+                    
+                    data['position'] = {
+                      'latitude': finalLat,
+                      'longitude': finalLng,
+                    };
+                    print('[DEBUG] Retrieved position from user document: lat=$finalLat, lng=$finalLng');
+                    
+                    // Update the station document with the position for future use (optional - may fail if no permission)
+                    try {
+                      final geoPoint = GeoPoint(finalLat, finalLng);
+                      await gasStationsCollection.doc(doc.id).update({
+                        'geoPoint': geoPoint,
+                        'position': data['position'],
+                      });
+                      print('[DEBUG] Updated station document with position');
+                    } catch (updateError) {
+                      // Permission denied is OK - the position is still available in the data
+                      print('[DEBUG] Could not update station document (permission denied is OK): $updateError');
+                    }
+                  }
+                }
+              } catch (e) {
+                print('[DEBUG] Error retrieving position from user document: $e');
+              }
+            }
+            if (data['position'] == null) {
+              print('[DEBUG] ERROR: Station ${doc.id} has no position data at all!');
+            }
+          }
+        }
+        
+        // Final check: if position is still (0,0), try to get it from user document
+        if (data['position'] != null) {
+          final posMap = data['position'] as Map<String, dynamic>;
+          final lat = (posMap['latitude'] ?? 0.0).toDouble();
+          final lng = (posMap['longitude'] ?? 0.0).toDouble();
+          if (lat == 0.0 && lng == 0.0) {
+            print('[DEBUG] WARNING: Station ${doc.id} has position (0,0), trying to fix...');
+            final ownerId = data['ownerId'] as String?;
+            if (ownerId != null && ownerId.isNotEmpty) {
+              try {
+                final userDoc = await usersCollection.doc(ownerId).get();
+                if (userDoc.exists) {
+                  final userData = userDoc.data() as Map<String, dynamic>?;
+                  final stationLat = userData?['stationLat'];
+                  final stationLng = userData?['stationLng'];
+                  if (stationLat != null && stationLng != null && 
+                      (stationLat as num).toDouble() != 0.0 && 
+                      (stationLng as num).toDouble() != 0.0) {
+                    final lat = (stationLat as num).toDouble();
+                    final lng = (stationLng as num).toDouble();
+                    
+                    // Validate coordinates are reasonable (Philippines bounds: lat ~5-20, lng ~115-127)
+                    // If coordinates seem swapped or out of bounds, try swapping them
+                    bool coordinatesValid = (lat >= 4.0 && lat <= 21.0 && lng >= 115.0 && lng <= 128.0);
+                    bool mightBeSwapped = (lng >= 4.0 && lng <= 21.0 && lat >= 115.0 && lat <= 128.0);
+                    
+                    double finalLat = lat;
+                    double finalLng = lng;
+                    
+                    if (!coordinatesValid && mightBeSwapped) {
+                      print('[DEBUG] WARNING: Coordinates appear to be swapped! Swapping lat/lng...');
+                      finalLat = lng;
+                      finalLng = lat;
+                      print('[DEBUG] Original: lat=$lat, lng=$lng');
+                      print('[DEBUG] Swapped: lat=$finalLat, lng=$finalLng');
+                    }
+                    
+                    data['position'] = {
+                      'latitude': finalLat,
+                      'longitude': finalLng,
+                    };
+                    print('[DEBUG] Fixed position from user document: lat=$finalLat, lng=$finalLng');
+                    
+                    // Update the station document with the correct position (optional - may fail if no permission)
+                    try {
+                      final geoPoint = GeoPoint(finalLat, finalLng);
+                      await gasStationsCollection.doc(doc.id).update({
+                        'geoPoint': geoPoint,
+                        'position': data['position'],
+                      });
+                      print('[DEBUG] Updated station document with fixed position');
+                    } catch (updateError) {
+                      // Permission denied is OK - the position is still available in the data
+                      print('[DEBUG] Could not update station document (permission denied is OK): $updateError');
+                    }
+                  }
+                }
+              } catch (e) {
+                print('[DEBUG] Error fixing position from user document: $e');
+              }
+            }
+          }
         }
 
         // Ensure prices is Map<String, double>
@@ -1011,8 +1320,8 @@ static Future<void> redeemVoucher({
           data['services'] = data['amenities'];
         }
 
-        return data;
-      }).toList();
+        stations.add(data);
+      }
 
       print('[DEBUG] FirestoreService.getAllGasStations: Successfully processed ${stations.length} stations');
       return stations;
@@ -1054,8 +1363,10 @@ static Future<void> redeemVoucher({
     required Map<String, dynamic> fuelPerformance,
   }) async {
     try {
+      final sanitizedPrices = _normalizePrices(prices);
+
       await gasStationsCollection.doc(stationId).update({
-        'prices': prices,
+        'prices': sanitizedPrices,
         'fuelPerformance': fuelPerformance,
         'lastUpdated': FieldValue.serverTimestamp(),
       });
@@ -1148,6 +1459,19 @@ static Future<void> redeemVoucher({
       await gasStationsCollection.doc(stationId).delete();
     } catch (e) {
       throw Exception('Failed to delete gas station: $e');
+    }
+  }
+
+  // Delete multiple gas stations
+  static Future<void> deleteGasStations(List<String> stationIds) async {
+    try {
+      final batch = _db.batch();
+      for (final stationId in stationIds) {
+        batch.delete(gasStationsCollection.doc(stationId));
+      }
+      await batch.commit();
+    } catch (e) {
+      throw Exception('Failed to delete gas stations: $e');
     }
   }
 
@@ -1610,3 +1934,25 @@ static Future<void> redeemVoucher({
     });
   }
 }
+
+  Map<String, double> _normalizePrices(Map<String, double> prices) {
+    final normalized = <String, double>{};
+    prices.forEach((key, value) {
+      final normalizedKey = key.trim().toLowerCase();
+      if (normalizedKey.isEmpty) {
+        print('Warning: Empty price key found, skipping');
+        return;
+      }
+      if (!value.isFinite || value.isNaN) {
+        print('Warning: Invalid price value for $normalizedKey: $value, skipping');
+        return;
+      }
+      double sanitizedValue = value;
+      if (sanitizedValue < 0) {
+        print('Warning: Negative price value for $normalizedKey: $value, using 0');
+        sanitizedValue = 0.0;
+      }
+      normalized[normalizedKey] = sanitizedValue;
+    });
+    return normalized;
+  }

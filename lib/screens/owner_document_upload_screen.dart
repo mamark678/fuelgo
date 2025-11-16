@@ -1,4 +1,5 @@
 // lib/screens/owner_document_upload_screen.dart
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -69,6 +70,13 @@ class _OwnerDocumentUploadScreenState extends State<OwnerDocumentUploadScreen> {
           .collection('users')
           .doc(widget.userId)
           .get();
+      
+      // If no Firestore document exists, this is a rejected user re-registering
+      // Skip email verification and allow direct document upload
+      if (!userDoc.exists) {
+        print('Rejected user re-registering - skipping email verification check');
+        return;
+      }
       
       final emailVerified = userDoc.data()?['emailVerified'] as bool? ?? false;
       final authProvider = userDoc.data()?['authProvider'] as String? ?? '';
@@ -384,30 +392,124 @@ class _OwnerDocumentUploadScreenState extends State<OwnerDocumentUploadScreen> {
   }
 
   Future<void> _createGasStation() async {
-    final stationId = 'FG${DateTime.now().year}-${DateTime.now().millisecondsSinceEpoch.toString().substring(7)}';
+  print('DEBUG: _gasStationIdImage is null? ${_gasStationIdImage == null}');
+  print('DEBUG: _governmentIdImage is null? ${_governmentIdImage == null}');
+  print('DEBUG: _businessPermitImage is null? ${_businessPermitImage == null}');
+  
+  try {
+    // Check if user already has a gas station (for resubmissions)
+    String stationId;
+    bool isResubmission = false;
+    
+    final userDoc = await FirebaseFirestore.instance
+        .collection('users')
+        .doc(widget.userId)
+        .get();
+    
+    if (userDoc.exists && userDoc.data()?['stationId'] != null) {
+      // User already has a station - this is a resubmission
+      stationId = userDoc.data()!['stationId'] as String;
+      isResubmission = true;
+      print('🔄 Resubmission detected - using existing station: $stationId');
+    } else {
+      // New registration - create new station ID
+      stationId = 'FG${DateTime.now().year}-${DateTime.now().millisecondsSinceEpoch.toString().substring(7)}';
+      print('🆕 New registration - creating station: $stationId');
+    }
+    
+    print('🏗️ ${isResubmission ? "Updating" : "Creating"} gas station: $stationId');
+    
+    // Create or update gas station
+    // Use station name as address if no specific address is provided
+    final address = _selectedStationName ?? 'Location: ${_selectedLatLng!.latitude.toStringAsFixed(6)}, ${_selectedLatLng!.longitude.toStringAsFixed(6)}';
     
     await FirestoreService.createOrUpdateGasStation(
       stationId: stationId,
       name: _selectedStationName!,
       brand: 'Shell', // Default brand
       position: _selectedLatLng!,
-      address: 'Valencia City, Bukidnon', // Default address
-      prices: {
-        'Regular': 55.50,
-        'Premium': 60.00,
-        'Diesel': 52.00,
-      },
+      address: address, // Use station name or coordinates
+      prices: {}, // Empty prices - owner will set prices later
       ownerId: widget.userId,
       stationName: _selectedStationName,
     );
-
-    // Upload documents to Firebase Storage and get URLs
-    final gasStationIdUrl = await _uploadDocumentToStorage(_gasStationIdImage!, 'gas_station_id', widget.userId);
-    final governmentIdUrl = await _uploadDocumentToStorage(_governmentIdImage!, 'government_id', widget.userId);
-    final businessPermitUrl = await _uploadDocumentToStorage(_businessPermitImage!, 'business_permit', widget.userId);
-
-    // Update user document with station info and document URLs
-    await FirebaseFirestore.instance.collection('users').doc(widget.userId).update({
+    
+    print('✅ Gas station ${isResubmission ? "updated" : "created"}');
+    print('🔄 Converting images to base64...');
+    
+    // Convert images to base64
+    String? gasStationIdBase64;
+    String? governmentIdBase64;
+    String? businessPermitBase64;
+    
+    // Convert Gas Station ID
+    try {
+      if (_gasStationIdImage != null) {
+        final bytes = await _gasStationIdImage!.readAsBytes();
+        gasStationIdBase64 = base64Encode(bytes);
+        print('✅ Gas Station ID converted to base64 (${bytes.length} bytes)');
+        
+        if (bytes.length > 800000) {
+          print('⚠️ Warning: Gas Station ID image is large (${bytes.length} bytes). May exceed Firestore limit.');
+        }
+      }
+    } catch (e) {
+      print('❌ Failed to convert Gas Station ID: $e');
+      throw Exception('Failed to process Gas Station ID image');
+    }
+    
+    // Convert Government ID
+    try {
+      if (_governmentIdImage != null) {
+        final bytes = await _governmentIdImage!.readAsBytes();
+        governmentIdBase64 = base64Encode(bytes);
+        print('✅ Government ID converted to base64 (${bytes.length} bytes)');
+        
+        if (bytes.length > 800000) {
+          print('⚠️ Warning: Government ID image is large (${bytes.length} bytes). May exceed Firestore limit.');
+        }
+      }
+    } catch (e) {
+      print('❌ Failed to convert Government ID: $e');
+      throw Exception('Failed to process Government ID image');
+    }
+    
+    // Convert Business Permit
+    try {
+      if (_businessPermitImage != null) {
+        final bytes = await _businessPermitImage!.readAsBytes();
+        businessPermitBase64 = base64Encode(bytes);
+        print('✅ Business Permit converted to base64 (${bytes.length} bytes)');
+        
+        if (bytes.length > 800000) {
+          print('⚠️ Warning: Business Permit image is large (${bytes.length} bytes). May exceed Firestore limit.');
+        }
+      }
+    } catch (e) {
+      print('❌ Failed to convert Business Permit: $e');
+      throw Exception('Failed to process Business Permit image');
+    }
+    
+    // Verify all base64 strings are valid
+    if (gasStationIdBase64 == null || governmentIdBase64 == null || businessPermitBase64 == null) {
+      throw Exception('One or more images failed to convert to base64');
+    }
+    
+    print('✅ All images converted to base64 successfully');
+    
+    // Calculate total document size
+    final totalSize = gasStationIdBase64.length + governmentIdBase64.length + businessPermitBase64.length;
+    print('📊 Total base64 size: ${totalSize} characters (~${(totalSize / 1024).toStringAsFixed(2)} KB)');
+    
+    if (totalSize > 900000) {
+      print('⚠️ WARNING: Total document size may exceed Firestore 1MB limit');
+    }
+    
+    // Update user document with station info and base64 images
+    print('💾 Updating Firestore user document with base64 images...');
+    
+    // Build update data map, conditionally including fields
+    final Map<String, dynamic> updateData = {
       'stationName': _selectedStationName,
       'stationId': stationId,
       'stationLat': _selectedLatLng!.latitude,
@@ -415,13 +517,37 @@ class _OwnerDocumentUploadScreenState extends State<OwnerDocumentUploadScreen> {
       'documentsSubmitted': true,
       'approvalStatus': 'pending',
       'submittedAt': FieldValue.serverTimestamp(),
-      'documentUrls': {
-        'gasStationId': gasStationIdUrl,
-        'governmentId': governmentIdUrl,
-        'businessPermit': businessPermitUrl,
+      // Store base64 images in documentImages field
+      'documentImages': {
+        'gasStationId': gasStationIdBase64,
+        'governmentId': governmentIdBase64,
+        'businessPermit': businessPermitBase64,
       },
-    });
+      // Keep empty documentUrls for backwards compatibility (use empty strings instead of null)
+      'documentUrls': {
+        'gasStationId': '',
+        'governmentId': '',
+        'businessPermit': '',
+      },
+    };
+    
+    // Only include resubmittedAt if it's a resubmission (don't set to null)
+    if (isResubmission) {
+      updateData['resubmittedAt'] = FieldValue.serverTimestamp();
+      updateData['resubmissionCount'] = FieldValue.increment(1);
+    } else {
+      // For new submissions, set resubmissionCount to 0 (not using increment)
+      updateData['resubmissionCount'] = 0;
+    }
+    
+    await FirebaseFirestore.instance.collection('users').doc(widget.userId).update(updateData);
+    
+    print('✅ User document updated successfully with base64 images');
+  } catch (e) {
+    print('❌ Error in _createGasStation: $e');
+    rethrow;
   }
+}
 
   Future<void> _sendEmailToAdmin() async {
   print('Starting email send process...');

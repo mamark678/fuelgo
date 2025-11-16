@@ -11,6 +11,9 @@ class LocationTrackingService {
   // Location tracking mode
   bool _isNavigationMode = false;
   
+  // Callback for location updates - THIS IS KEY FOR REAL-TIME UPDATES
+  Function(LocationData)? onLocationUpdate;
+  
   LocationTrackingService() {
     _location = Location();
     _initializeLocation();
@@ -35,23 +38,35 @@ class LocationTrackingService {
           throw Exception('Location permissions are denied');
         }
       }
+      
+      // Set initial settings for high accuracy
+      await _location!.changeSettings(
+        accuracy: LocationAccuracy.high,
+        interval: 1000, // 1 second updates for real-time tracking
+        distanceFilter: 0, // Update on every change
+      );
     } catch (e) {
       print('Error initializing location: $e');
     }
   }
   
-  /// Start continuous location tracking
-  Future<void> startTracking() async {
+  /// Start continuous location tracking with real-time updates
+  Future<void> startTracking({Function(LocationData)? onUpdate}) async {
     if (_isDisposed || _isTracking) return;
     
     try {
       await _initializeLocation();
       
+      // Store the callback
+      if (onUpdate != null) {
+        onLocationUpdate = onUpdate;
+      }
+      
       _locationSubscription = _location!.onLocationChanged.listen(
         (LocationData currentLocation) {
-          // Handle location updates
           if (!_isDisposed) {
-            // You can add location update handling here if needed
+            // Immediately forward location updates via callback
+            onLocationUpdate?.call(currentLocation);
           }
         },
         onError: (error) {
@@ -60,9 +75,9 @@ class LocationTrackingService {
       );
       
       _isTracking = true;
-      print('Location tracking started');
+      print('✅ Real-time location tracking started');
     } catch (e) {
-      print('Error starting location tracking: $e');
+      print('❌ Error starting location tracking: $e');
       throw Exception('Failed to start location tracking: $e');
     }
   }
@@ -75,6 +90,7 @@ class LocationTrackingService {
       await _locationSubscription?.cancel();
       _locationSubscription = null;
       _isTracking = false;
+      onLocationUpdate = null;
       print('Location tracking stopped');
     } catch (e) {
       print('Error stopping location tracking: $e');
@@ -90,11 +106,11 @@ class LocationTrackingService {
       if (_location != null) {
         await _location!.changeSettings(
           accuracy: LocationAccuracy.high,
-          interval: 1000, // 1 second updates
-          distanceFilter: 0, // Update on every change
+          interval: 1000, // 1 second updates for smooth navigation
+          distanceFilter: 0, // Update on every change for real-time tracking
         );
       }
-      print('Navigation mode enabled');
+      print('Navigation mode enabled - high accuracy');
     } catch (e) {
       print('Error enabling navigation mode: $e');
     }

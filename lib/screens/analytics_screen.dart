@@ -6,12 +6,16 @@ import 'package:fuelgo/models/analytics_data.dart';
 import 'package:fuelgo/services/analytics_service.dart';
 import 'package:fuelgo/services/auth_service.dart';
 import 'package:fuelgo/services/firestore_service.dart';
+import 'package:fuelgo/services/user_interaction_service.dart';
 import 'package:fuelgo/services/user_preferences_service.dart';
 import 'package:fuelgo/widgets/analytics_card_widget.dart';
 import 'package:fuelgo/widgets/analytics_summary_widget.dart';
-import 'package:fuelgo/widgets/market_trends_chart_widget.dart';
-import 'package:fuelgo/widgets/price_chart_widget.dart';
+import 'package:fuelgo/widgets/enhanced_market_trends_widget.dart';
+import 'package:fuelgo/widgets/enhanced_price_chart_widget.dart';
+import 'package:fuelgo/widgets/price_comparison_widget.dart';
+import 'package:fuelgo/widgets/price_prediction_widget.dart';
 import 'package:fuelgo/widgets/station_selector_widget.dart';
+import 'package:fuelgo/widgets/user_interaction_analytics_widget.dart';
 
 class AnalyticsScreen extends StatefulWidget {
   const AnalyticsScreen({super.key});
@@ -212,6 +216,22 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
           _selectedStationAnalytics = analytics;
           _selectedStationId = stationId;
         });
+        
+        // Track analytics view
+        UserInteractionService.trackAnalyticsView(
+          stationId: stationId,
+          fuelType: fuelType,
+        );
+        
+        // Track price view
+        if (analytics.currentPrice > 0) {
+          UserInteractionService.trackPriceView(
+            stationId: stationId,
+            stationName: stationName,
+            fuelType: fuelType ?? 'all',
+            price: analytics.currentPrice,
+          );
+        }
       } else {
         print('DEBUG: No station found with ID: $stationId');
       }
@@ -296,9 +316,11 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
   Widget _buildAnalyticsTab() {
     final user = AuthService().currentUser;
 
-    return ListView(
-      padding: const EdgeInsets.all(16),
-      children: [
+    return RefreshIndicator(
+      onRefresh: _loadAnalyticsData,
+      child: ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
         const Center(
           child: Column(
             children: [
@@ -340,29 +362,90 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
 
         const SizedBox(height: 24),
 
-        // Price History Chart
-        if (_selectedStationAnalytics != null)
-          PriceChartWidget(
-            analyticsData: _selectedStationAnalytics!,
-            chartHeight: 250,
-            showTitle: true,
+        // Price Analytics Section
+        if (_selectedStationAnalytics != null) ...[
+          _buildSectionCard(
+            title: 'Price Analytics',
+            icon: Icons.show_chart,
+            iconColor: Colors.blue,
+            child: EnhancedPriceChartWidget(
+              analyticsData: _selectedStationAnalytics!,
+              chartHeight: 350,
+              showTitle: true,
+            ),
+          ),
+          const SizedBox(height: 24),
+          
+          // Price Prediction Section
+          _buildSectionCard(
+            title: 'Price Prediction',
+            icon: Icons.trending_up,
+            iconColor: Colors.orange,
+            child: PricePredictionWidget(
+              analyticsData: _selectedStationAnalytics!,
+              predictionDays: 7,
+            ),
+          ),
+        ] else if (_isLoadingStationAnalytics)
+          Container(
+            padding: const EdgeInsets.all(32),
+            child: const Center(child: CircularProgressIndicator()),
           )
-        else if (_isLoadingStationAnalytics)
-          const Center(child: CircularProgressIndicator())
         else
           Container(
-            height: 250,
+            padding: const EdgeInsets.all(32),
             decoration: BoxDecoration(
               color: Colors.grey[100],
               borderRadius: BorderRadius.circular(12),
             ),
-            child: const Center(
-              child: Text(
-                'Select a gas station below to view price history',
-                style: TextStyle(color: Colors.grey),
+            child: Center(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.local_gas_station, size: 64, color: Colors.grey[400]),
+                  const SizedBox(height: 16),
+                  const Text(
+                    'Select a gas station below to view price history',
+                    style: TextStyle(
+                      color: Colors.grey,
+                      fontSize: 16,
+                    ),
+                    textAlign: TextAlign.center,
+                  ),
+                ],
               ),
             ),
           ),
+
+        const SizedBox(height: 24),
+
+        // User Interaction Analytics
+        const UserInteractionAnalyticsWidget(),
+
+        const SizedBox(height: 24),
+
+        // Price Comparison Section (if multiple stations selected)
+        if (_analyticsData.length > 1 && _selectedFuelType != null) ...[
+          Builder(
+            builder: (context) {
+              final comparisonList = _analyticsData.where((a) => a.fuelType.toLowerCase() == _selectedFuelType!.toLowerCase()).toList();
+              
+              // Track price comparison interaction
+              if (comparisonList.length > 1) {
+                final stationIds = comparisonList.map((a) => a.stationId).toList();
+                UserInteractionService.trackPriceComparison(
+                  stationIds: stationIds,
+                  fuelType: _selectedFuelType!,
+                );
+              }
+              
+              return PriceComparisonWidget(
+                analyticsList: comparisonList,
+                fuelType: _selectedFuelType!,
+              );
+            },
+          ),
+        ],
 
         const SizedBox(height: 24),
 
@@ -402,6 +485,7 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
             )).toList(),
           ),
       ],
+    ),
     );
   }
 
@@ -576,6 +660,14 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
       ),
       child: InkWell(
         onTap: () {
+          // Track user interaction
+          if (stationId != null) {
+            UserInteractionService.trackStationClick(
+              stationId: stationId,
+              stationName: stationName,
+            );
+          }
+          
           setState(() {
             _selectedStationId = stationId;
             if (stationId != null) {
@@ -779,19 +871,24 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
   }
 
   Widget _buildMarketTrendsTab() {
-    return ListView(
-      padding: const EdgeInsets.all(16),
-      children: [
+    return RefreshIndicator(
+      onRefresh: _loadAnalyticsData,
+      child: ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
         Center(
           child: Column(
             children: [
-              const CircleAvatar(
-                radius: 40,
-                backgroundColor: Colors.green,
-                child: Icon(
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: Colors.green.withOpacity(0.1),
+                  shape: BoxShape.circle,
+                ),
+                child: const Icon(
                   Icons.trending_up,
-                  size: 40,
-                  color: Colors.white,
+                  size: 48,
+                  color: Colors.green,
                 ),
               ),
               const SizedBox(height: 16),
@@ -815,52 +912,131 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
 
         const SizedBox(height: 24),
 
-        _buildSectionHeader('Market Analysis'),
-
+        // Enhanced Market Trends Widget
         if (_selectedTabIndex == 1) // Only show in market trends tab
-          MarketTrendsChartWidget(
+          EnhancedMarketTrendsWidget(
             analyticsData: _analyticsData,
-            height: 300,
+            height: 400,
           ),
 
         const SizedBox(height: 16),
 
-        // Time Period Selector
-        _buildTimePeriodSelector(),
+        // Time Period Selector with better styling
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          decoration: BoxDecoration(
+            color: Colors.grey[100],
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: Colors.grey[300]!),
+          ),
+          child: Row(
+            children: [
+              const Icon(Icons.calendar_today, size: 20, color: Colors.grey),
+              const SizedBox(width: 8),
+              const Text(
+                'Time Period:',
+                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: DropdownButton<String>(
+                  value: _selectedTimePeriod,
+                  isExpanded: true,
+                  underline: const SizedBox(),
+                  items: _timePeriods.map((period) {
+                    return DropdownMenuItem(
+                      value: period,
+                      child: Text(period),
+                    );
+                  }).toList(),
+                  onChanged: (value) {
+                    setState(() {
+                      _selectedTimePeriod = value!;
+                    });
+                    _loadAnalyticsData();
+                  },
+                ),
+              ),
+            ],
+          ),
+        ),
 
         const SizedBox(height: 16),
 
         if (_isLoading)
-          const Center(child: CircularProgressIndicator())
+          const Padding(
+            padding: EdgeInsets.all(32),
+            child: Center(child: CircularProgressIndicator()),
+          )
         else if (_analyticsData.isEmpty)
-          const Center(child: Text('No market data available'))
+          Padding(
+            padding: const EdgeInsets.all(32),
+            child: Center(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.trending_flat, size: 64, color: Colors.grey[400]),
+                  const SizedBox(height: 16),
+                  Text(
+                    'No market data available',
+                    style: TextStyle(color: Colors.grey[600], fontSize: 16),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    'Try selecting a different time period',
+                    style: TextStyle(color: Colors.grey[500], fontSize: 12),
+                  ),
+                ],
+              ),
+            ),
+          )
         else
           _buildMarketOverview(),
-      ],
+        ],
+      ),
     );
   }
 
 
 
   Widget _buildTimePeriodSelector() {
-    return DropdownButtonFormField<String>(
-      value: _selectedTimePeriod,
-      decoration: const InputDecoration(
-        labelText: 'Time Period',
-        border: OutlineInputBorder(),
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        color: Colors.grey[100],
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.grey[300]!),
       ),
-      items: _timePeriods.map((period) {
-        return DropdownMenuItem(
-          value: period,
-          child: Text(period),
-        );
-      }).toList(),
-      onChanged: (value) {
-        setState(() {
-          _selectedTimePeriod = value!;
-        });
-        _loadAnalyticsData();
-      },
+      child: Row(
+        children: [
+          const Icon(Icons.calendar_today, size: 20, color: Colors.grey),
+          const SizedBox(width: 8),
+          const Text(
+            'Time Period:',
+            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: DropdownButton<String>(
+              value: _selectedTimePeriod,
+              isExpanded: true,
+              underline: const SizedBox(),
+              items: _timePeriods.map((period) {
+                return DropdownMenuItem(
+                  value: period,
+                  child: Text(period),
+                );
+              }).toList(),
+              onChanged: (value) {
+                setState(() {
+                  _selectedTimePeriod = value!;
+                });
+                _loadAnalyticsData();
+              },
+            ),
+          ),
+        ],
+      ),
     );
   }
 
@@ -953,6 +1129,48 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
           fontSize: 18,
           fontWeight: FontWeight.bold,
           color: Colors.blue,
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSectionCard({
+    required String title,
+    required IconData icon,
+    required Color iconColor,
+    required Widget child,
+  }) {
+    return Card(
+      elevation: 4,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: iconColor.withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Icon(icon, color: iconColor, size: 24),
+                ),
+                const SizedBox(width: 12),
+                Text(
+                  title,
+                  style: const TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 16),
+            child,
+          ],
         ),
       ),
     );

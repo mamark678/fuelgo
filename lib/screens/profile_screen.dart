@@ -103,7 +103,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
     if (user == null) return {'name': 'You', 'location': 'Unknown'};
     
     final userName = await UserServiceFixed.getUserName(user.uid);
-    return {'name': userName, 'location': 'Valencia City, Bukidnon'};
+    // REMOVED: Hardcoded location - should use user's actual location if available
+    return {'name': userName, 'location': 'Location not specified'};
   }
 
   @override
@@ -362,7 +363,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
         ListTile(
           leading: const Icon(Icons.location_city, color: Colors.purple),
           title: const Text('Coverage Area'),
-          subtitle: const Text('Valencia City, Bukidnon'),
+          subtitle: const Text('All registered gas stations'),
         ),
         ListTile(
           leading: const Icon(Icons.api, color: Colors.blue),

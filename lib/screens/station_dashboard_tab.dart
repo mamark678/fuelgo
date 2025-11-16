@@ -1,9 +1,6 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
-import 'package:latlong2/latlong.dart';
 
-import '../services/auth_service.dart';
-import '../services/firestore_service.dart';
 // Import the owner dashboard screen to access the public state
 import 'owner_dashboard_screen.dart';
 
@@ -71,54 +68,12 @@ class _StationDashboardTabState extends State<StationDashboardTab> {
     }
   }
 
-  Future<void> _createTestStation() async {
-    try {
-      final user = AuthService().currentUser;
-      if (user == null) return;
-      
-      final stationId = 'TEST-${DateTime.now().millisecondsSinceEpoch}';
-      await FirestoreService.createOrUpdateGasStation(
-        stationId: stationId,
-        name: 'Test Gas Station',
-        brand: 'Shell',
-        position: const LatLng(7.9061, 125.0931), // Valencia City coordinates
-        address: 'Test Address, Valencia City, Bukidnon',
-        prices: {
-          'Regular': 55.50,
-          'Premium': 60.00,
-          'Diesel': 52.00,
-        },
-        ownerId: user.uid,
-        stationName: 'Test Gas Station',
-      );
-      
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Test station created successfully! Please refresh the dashboard.'),
-            backgroundColor: Colors.green,
-          ),
-        );
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Error creating test station: $e'),
-            backgroundColor: Colors.red,
-          ),
-        );
-      }
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       body: RefreshIndicator(
         onRefresh: () async {
           // This will trigger the parent's refresh method
-          // Now using the public state class
           final parentState = context.findAncestorStateOfType<OwnerDashboardScreenState>();
           if (parentState != null) {
             await parentState.refreshDashboard();
@@ -187,11 +142,14 @@ class _StationDashboardTabState extends State<StationDashboardTab> {
                                        size: 16,
                                      ),
                                      const SizedBox(width: 4),
-                                     Text(
-                                        widget.assignedStations.first['address'] ?? 'Location not set',
-                                       style: TextStyle(
-                                         color: Colors.white.withOpacity(0.8),
-                                         fontSize: 14,
+                                     Expanded(
+                                       child: Text(
+                                          widget.assignedStations.first['address'] ?? 'Location not set',
+                                         style: TextStyle(
+                                           color: Colors.white.withOpacity(0.8),
+                                           fontSize: 14,
+                                         ),
+                                         overflow: TextOverflow.ellipsis,
                                        ),
                                      ),
                                    ],
@@ -211,7 +169,7 @@ class _StationDashboardTabState extends State<StationDashboardTab> {
                                borderRadius: BorderRadius.circular(12),
                              ),
                              child: const Icon(
-                               Icons.local_gas_station,
+                               Icons.info_outline,
                                color: Colors.white,
                                size: 24,
                              ),
@@ -222,7 +180,7 @@ class _StationDashboardTabState extends State<StationDashboardTab> {
                                crossAxisAlignment: CrossAxisAlignment.start,
                                children: [
                                  const Text(
-                                    'No Stations Assigned',
+                                    'No Station Yet',
                                     style: TextStyle(
                                       color: Colors.white,
                                       fontSize: 20,
@@ -231,38 +189,16 @@ class _StationDashboardTabState extends State<StationDashboardTab> {
                                   ),
                                   const SizedBox(height: 4),
                                   Text(
-                                    'Create a test station to get started',
+                                    'Complete your station registration to get started',
                                     style: TextStyle(
-                                      color: Colors.white.withOpacity(0.8),
+                                      color: Colors.white.withOpacity(0.9),
                                       fontSize: 14,
-                                    ),
-                                  ),
-                                  const SizedBox(height: 8),
-                                  Text(
-                                    'User ID: ${widget.userId ?? 'Unknown'}',
-                                    style: TextStyle(
-                                      color: Colors.white.withOpacity(0.6),
-                                      fontSize: 12,
                                     ),
                                   ),
                                ],
                              ),
                            ),
                          ],
-                       ),
-                       const SizedBox(height: 16),
-                       SizedBox(
-                         width: double.infinity,
-                         child: ElevatedButton.icon(
-                           onPressed: _createTestStation,
-                           icon: const Icon(Icons.add),
-                           label: const Text('Create Test Station'),
-                           style: ElevatedButton.styleFrom(
-                             backgroundColor: Colors.white,
-                             foregroundColor: Colors.blue.shade800,
-                             padding: const EdgeInsets.symmetric(vertical: 12),
-                           ),
-                         ),
                        ),
                      ],
                   ],
@@ -350,7 +286,6 @@ class _StationDashboardTabState extends State<StationDashboardTab> {
                           color: Colors.blue,
                       onTap: () {
                              if (widget.assignedStations.isNotEmpty) {
-                               // Removed navigation to deleted PriceManagementScreen
                                ScaffoldMessenger.of(context).showSnackBar(
                                  const SnackBar(
                                    content: Text('Manage prices directly in the Prices tab.'),
@@ -360,7 +295,7 @@ class _StationDashboardTabState extends State<StationDashboardTab> {
                             } else {
                               ScaffoldMessenger.of(context).showSnackBar(
                                 const SnackBar(
-                                  content: Text('No stations assigned. Create a test station first.'),
+                                  content: Text('No stations assigned. Complete registration first.'),
                                   backgroundColor: Colors.orange,
                                 ),
                               );
@@ -385,37 +320,7 @@ class _StationDashboardTabState extends State<StationDashboardTab> {
                 ],
               ),
             ),
-
-            /* Recent Activity Section
-            Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text(
-                    'Recent Activity',
-                    style: TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-                  ActivityCard(
-                    title: 'Price Update',
-                    description: 'Regular fuel price changed to ₱55.50',
-                    time: '2h ago',
-                    icon: Icons.edit,
-                  ),
-                  const SizedBox(height: 12),
-                  ActivityCard(
-                    title: 'New Review',
-                    description: '5-star review from Juan D.',
-                    time: '4h ago',
-                    icon: Icons.star,
-                  ),
-                ],
-              ),
-            ),*/
+            const SizedBox(height: 16),
           ],
         ),
       ),

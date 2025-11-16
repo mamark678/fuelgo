@@ -1,17 +1,30 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:math' as math;
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
-import 'package:http/http.dart' as http;
 import 'package:latlong2/latlong.dart';
 
 import '../models/gas_station.dart';
 import '../screens/list_screen.dart';
 import '../services/firestore_service.dart';
 import '../services/navigation_service.dart';
+import '../services/user_interaction_service.dart';
+
+// Fuel type filter enum for filtering stations by available fuel types
+enum FuelTypeFilter {
+  all('All Fuel Types'),
+  regularOnly('Only Regular'),
+  premiumOnly('Only Premium'),
+  dieselOnly('Only Diesel'),
+  regularAndPremium('Regular & Premium'),
+  premiumAndDiesel('Premium & Diesel'),
+  regularAndDiesel('Regular & Diesel');
+
+  final String label;
+  const FuelTypeFilter(this.label);
+}
 
 class MapTab extends StatefulWidget {
   final List<Map<String, dynamic>> assignedStations;
@@ -35,6 +48,8 @@ class _MapTabState extends State<MapTab> {
   String _nextInstruction = '';
   double _currentSpeed = 0.0;
   int _trafficLevel = 0; // 0 = none, 1 = light, 2 = moderate, 3 = heavy
+  bool _isMapLocked = true; // Default to locked during navigation
+  Timer? _locationUpdateTimer;
 
   double? _distanceToStationKm;
   Duration? _estimatedArrivalTime;
@@ -66,6 +81,14 @@ class _MapTabState extends State<MapTab> {
 
     print('[DEBUG] Navigating to station: id=$stationId, name=$stationName, using=$navigationId');
 
+    // Track station click interaction
+    if (stationId != null && stationName != null) {
+      UserInteractionService.trackStationClick(
+        stationId: stationId,
+        stationName: stationName,
+      );
+    }
+
     if (widget.onNavigateToStation != null) {
       widget.onNavigateToStation!(station);
     } else {
@@ -90,7 +113,10 @@ class _MapTabState extends State<MapTab> {
 
   String _searchQuery = '';
   String _selectedFuelType = 'Regular';
-  String _selectedPriceFilter = 'All'; // All / Cheap / Medium / Expensive
+  String _selectedPriceFilter = 'All'; // All / Cheap / Mid / Expensive
+  static const double _cheapPriceUpperBound = 52.0;
+  static const double _expensivePriceLowerBound = 65.0;
+  FuelTypeFilter? _selectedFuelTypeFilter; // Filter stations by available fuel types
   bool _showFilters = false;
 
   double _iconScale = 1.1; // default slightly larger
@@ -151,13 +177,15 @@ class _MapTabState extends State<MapTab> {
 
   Future<void> _loadGasStations() async {
     try {
-      // Load registered stations from Firestore with real prices
+      // Load only approved stations from Firestore
+      // Map starts empty - stations only appear when owners register and are approved
       final registeredStations = await _loadRegisteredStations();
       _gasStations = registeredStations;
 
-      // Load OSM stations with randomized prices (only for unregistered stations)
-      final osmStations = await _loadOpenStreetMapStations();
-      _gasStations.addAll(osmStations);
+      // COMMENTED OUT: OSM stations with randomized prices
+      // Gas stations should only appear when owners register and are approved
+      // final osmStations = await _loadOpenStreetMapStations();
+      // _gasStations.addAll(osmStations);
 
       _filterAndSearch();
     } catch (e) {
@@ -166,18 +194,44 @@ class _MapTabState extends State<MapTab> {
   }
 
   /// Load registered gas stations from Firestore with real prices and ratings
+  /// Only shows stations from owners with approvalStatus = 'approved'
+  /// Uses ownerApprovalStatus field stored in gas_station document
   Future<List<GasStation>> _loadRegisteredStations() async {
     try {
-      // Get all registered stations from Firestore
+      // Get all stations from Firestore
       final firestoreStations = await FirestoreService.getAllGasStations();
       
+      // Filter stations to include those from approved or pending owners
+      // Use ownerApprovalStatus field stored in gas_station document (avoids permission issues)
+      // Show stations immediately after registration (pending) and after approval
+      final approvedStations = firestoreStations.where((stationMap) {
+        final ownerApprovalStatus = stationMap['ownerApprovalStatus'] as String? ?? 'pending';
+        // Show stations from approved or pending owners (not rejected)
+        return ownerApprovalStatus == 'approved' || ownerApprovalStatus == 'pending';
+      }).toList();
+      
       // Convert Firestore data to GasStation objects
-      final registeredStations = firestoreStations.map((stationMap) {
+      final registeredStations = approvedStations.map((stationMap) {
         // Ensure the station has an ID
         stationMap['id'] = stationMap['id'] ?? '';
         
+        debugPrint('[MAP] Processing station: ${stationMap['id']}');
+        debugPrint('[MAP] Station name: ${stationMap['name']}');
+        debugPrint('[MAP] Station data keys: ${stationMap.keys.toList()}');
+        debugPrint('[MAP] Has position: ${stationMap.containsKey('position')}');
+        debugPrint('[MAP] Has geoPoint: ${stationMap.containsKey('geoPoint')}');
+        debugPrint('[MAP] Position value: ${stationMap['position']}');
+        debugPrint('[MAP] GeoPoint value: ${stationMap['geoPoint']}');
+        
         // Convert to GasStation object
         final station = GasStation.fromMap(stationMap);
+        
+        debugPrint('[MAP] Station position after conversion: ${station.position.latitude}, ${station.position.longitude}');
+        
+        // Validate position (should not be 0,0 unless it's actually at that location)
+        if (station.position.latitude == 0.0 && station.position.longitude == 0.0) {
+          debugPrint('[MAP] WARNING: Station ${stationMap['id']} has invalid position (0,0)');
+        }
         
         // Load ratings for this station
         _loadStationRatings(station.id ?? '');
@@ -185,7 +239,8 @@ class _MapTabState extends State<MapTab> {
         return station;
       }).toList();
 
-      debugPrint('Loaded ${registeredStations.length} registered stations from Firestore');
+      debugPrint('[MAP] Loaded ${registeredStations.length} approved/pending stations from Firestore');
+      debugPrint('[MAP] Total stations after conversion: ${registeredStations.length}');
       return registeredStations;
     } catch (e) {
       debugPrint('Error loading registered stations: $e');
@@ -347,6 +402,22 @@ class _MapTabState extends State<MapTab> {
           _voiceEnabled = true;
           _showNavigationDashboard = true;
           _nextInstruction = _navigationService.nextTurn;
+          
+          _locationUpdateTimer?.cancel();
+          _locationUpdateTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+            if (_isMapLocked && _navigationService.currentLocation != null) {
+              _mapController.move(
+                LatLng(
+                  _navigationService.currentLocation!.latitude!,
+                  _navigationService.currentLocation!.longitude!,
+                ),
+                _mapController.camera.zoom,
+              );
+            }
+          });
+          
+          // Zoom in to current location
+          _mapController.move(currentLatLng, 18.0);
         });
       } else {
         setState(() {
@@ -379,6 +450,10 @@ class _MapTabState extends State<MapTab> {
     _navigationService.setVoiceEnabled(_voiceEnabled);
   }
 
+  // COMMENTED OUT: Loading OSM stations with randomized prices
+  // Gas stations should only appear when owners register and are approved
+  // Map starts empty - stations only appear after owner registration and approval
+  /*
   Future<List<GasStation>> _loadOpenStreetMapStations() async {
     // keep your bbox or make configurable
     const bbox = '7.85,125.00,7.95,125.15';
@@ -427,7 +502,8 @@ class _MapTabState extends State<MapTab> {
 
         // Only add OSM station if it's not near a registered station
         if (!isNearRegisteredStation) {
-          // Apply randomizer for unregistered OSM stations
+          // COMMENTED OUT: Randomizer for unregistered OSM stations
+          // Prices should come from actual gas station owners, not randomized
           final prices = {
             'Regular': 55.50 + (math.Random().nextDouble() * 5),
             'Premium': 60.00 + (math.Random().nextDouble() * 5),
@@ -460,6 +536,7 @@ class _MapTabState extends State<MapTab> {
       return [];
     }
   }
+  */
 
   
 
@@ -480,19 +557,30 @@ class _MapTabState extends State<MapTab> {
   }
 
   void _filterAndSearch() {
+    debugPrint('[MAP] _filterAndSearch: Starting with ${_gasStations.length} stations');
     List<GasStation> filtered = List<GasStation>.from(_gasStations);
 
+    // Apply fuel type filter (filter stations by available fuel types)
+    if (_selectedFuelTypeFilter != null && _selectedFuelTypeFilter != FuelTypeFilter.all) {
+      filtered = filtered.where((station) {
+        return _stationMatchesFuelTypeFilter(station, _selectedFuelTypeFilter!);
+      }).toList();
+    }
+
+    // Apply price filter
+    // Allow stations without prices to show (they appear as grey markers)
     if (_selectedPriceFilter != 'All') {
       final priceRanges = _getPriceRanges();
       filtered = filtered.where((station) {
         final price = _getStationPrice(station, _selectedFuelType);
-        if (price == null) return false;
+        // If station has no price, still show it (don't filter out)
+        if (price == null) return true;
 
         switch (_selectedPriceFilter) {
           case 'Cheap':
-            return price <= priceRanges['cheap']!;
-          case 'Medium':
-            return price > priceRanges['cheap']! && price <= priceRanges['expensive']!;
+            return price < priceRanges['cheap']!;
+          case 'Mid':
+            return price >= priceRanges['cheap']! && price <= priceRanges['expensive']!;
           case 'Expensive':
             return price > priceRanges['expensive']!;
           default:
@@ -501,6 +589,7 @@ class _MapTabState extends State<MapTab> {
       }).toList();
     }
 
+    // Apply search filter
     if (_searchQuery.isNotEmpty) {
       final q = _searchQuery.toLowerCase();
       filtered = filtered.where((station) {
@@ -512,7 +601,53 @@ class _MapTabState extends State<MapTab> {
     }
 
     _filteredGasStations = filtered;
+    debugPrint('[MAP] _filterAndSearch: After filtering, ${_filteredGasStations.length} stations remain');
     _createMarkers();
+  }
+
+  // Check if a station matches the selected fuel type filter
+  // Allow stations without prices to show (they appear as grey markers)
+  bool _stationMatchesFuelTypeFilter(GasStation station, FuelTypeFilter filter) {
+    // If station has no prices, still show it (don't filter out)
+    if (station.prices == null || station.prices!.isEmpty) return true;
+
+    // Normalize fuel type keys to lowercase for comparison
+    final availableFuelTypes = station.prices!.keys.map((k) => k.toLowerCase()).toSet();
+
+    switch (filter) {
+      case FuelTypeFilter.regularOnly:
+        return availableFuelTypes.contains('regular') && 
+               !availableFuelTypes.contains('premium') && 
+               !availableFuelTypes.contains('diesel');
+      
+      case FuelTypeFilter.premiumOnly:
+        return availableFuelTypes.contains('premium') && 
+               !availableFuelTypes.contains('regular') && 
+               !availableFuelTypes.contains('diesel');
+      
+      case FuelTypeFilter.dieselOnly:
+        return availableFuelTypes.contains('diesel') && 
+               !availableFuelTypes.contains('regular') && 
+               !availableFuelTypes.contains('premium');
+      
+      case FuelTypeFilter.regularAndPremium:
+        return availableFuelTypes.contains('regular') && 
+               availableFuelTypes.contains('premium') &&
+               !availableFuelTypes.contains('diesel');
+      
+      case FuelTypeFilter.premiumAndDiesel:
+        return availableFuelTypes.contains('premium') && 
+               availableFuelTypes.contains('diesel') &&
+               !availableFuelTypes.contains('regular');
+      
+      case FuelTypeFilter.regularAndDiesel:
+        return availableFuelTypes.contains('regular') && 
+               availableFuelTypes.contains('diesel') &&
+               !availableFuelTypes.contains('premium');
+      
+      case FuelTypeFilter.all:
+        return true;
+    }
   }
 
   @override
@@ -523,10 +658,14 @@ class _MapTabState extends State<MapTab> {
         mainAxisSize: MainAxisSize.min,
         children: [
           FloatingActionButton(
-            heroTag: 'refresh',
-            onPressed: _initializeAndLoadStations,
-            tooltip: 'Refresh Stations',
-            child: const Icon(Icons.refresh),
+            heroTag: 'lock',
+            onPressed: () {
+              setState(() {
+                _isMapLocked = !_isMapLocked;
+              });
+            },
+            tooltip: _isMapLocked ? 'Unlock Map' : 'Lock to Location',
+            child: Icon(_isMapLocked ? Icons.lock : Icons.lock_open),
           ),
           const SizedBox(height: 8),
           FloatingActionButton(
@@ -574,155 +713,209 @@ class _MapTabState extends State<MapTab> {
           ),
         ],
       ),
-      body: _gasStations.isEmpty
-          ? const Center(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Icon(Icons.map, size: 64, color: Colors.grey),
-                  SizedBox(height: 16),
-                  Text(
-                    'Loading Gas Stations',
-                    style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
-                  ),
-                  SizedBox(height: 8),
-                  Text(
-                    'Fetching station data and coordinates...',
-                    style: TextStyle(color: Colors.grey),
-                    textAlign: TextAlign.center,
-                  ),
-                ],
+      body: Stack(
+        children: [
+          // Map (always visible, full screen)
+          FlutterMap(
+            mapController: _mapController,
+            options: MapOptions(
+              initialCenter: _getInitialMapCenter(),
+              initialZoom: 14.5,
+              interactionOptions: const InteractionOptions(flags: InteractiveFlag.all),
+            ),
+            children: [
+              TileLayer(
+                urlTemplate: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+                subdomains: const ['a', 'b', 'c'],
+                userAgentPackageName: 'com.fuelgo.app',
               ),
-            )
-          : Stack(
-              children: [
-                // Map (full screen)
-                FlutterMap(
-                  mapController: _mapController,
-                  options: MapOptions(
-                    initialCenter: _getInitialMapCenter(),
-                    initialZoom: 14.5,
-                    interactionOptions: const InteractionOptions(flags: InteractiveFlag.all),
-                  ),
-                  children: [
-                    TileLayer(
-                      urlTemplate: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
-                      subdomains: const ['a', 'b', 'c'],
-                      userAgentPackageName: 'com.fuelgo.app',
+              MarkerLayer(markers: _markers),
+              if (_isNavigating && _navigationService.polylines.isNotEmpty)
+                PolylineLayer(polylines: _navigationService.polylines),
+              if (_isNavigating && _navigationService.currentLocation != null)
+                MarkerLayer(
+                  markers: [
+                    Marker(
+                      point: LatLng(
+                        _navigationService.currentLocation!.latitude!,
+                        _navigationService.currentLocation!.longitude!,
+                      ),
+                      width: 26,
+                      height: 26,
+                      // <-- use `child` (some flutter_map versions expect this)
+                      child: Container(
+                        decoration: BoxDecoration(
+                          color: Colors.blue,
+                          shape: BoxShape.circle,
+                          border: Border.all(color: Colors.white, width: 3),
+                        ),
+                      ),
                     ),
-                    MarkerLayer(markers: _markers),
-                    if (_isNavigating && _navigationService.polylines.isNotEmpty)
-                      PolylineLayer(polylines: _navigationService.polylines),
-                    if (_isNavigating && _navigationService.currentLocation != null)
-                      MarkerLayer(
-                        markers: [
-                          Marker(
-                            point: LatLng(
-                              _navigationService.currentLocation!.latitude!,
-                              _navigationService.currentLocation!.longitude!,
+                  ],
+                ),
+            ],
+          ),
+
+          // Floating search/filter card (top center) - Google Maps style
+          Positioned(
+            left: 14,
+            right: 14,
+            top: 40,
+            child: Material(
+              elevation: 6,
+              borderRadius: BorderRadius.circular(12),
+              color: Colors.white,
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                child: Column(
+                  children: [
+                    Row(
+                      children: [
+                        const Icon(Icons.search, color: Colors.black54),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: TextField(
+                            decoration: const InputDecoration(
+                              isDense: true,
+                              hintText: 'Search station or price...',
+                              border: InputBorder.none,
                             ),
-                            width: 26,
-                            height: 26,
-                            // <-- use `child` (some flutter_map versions expect this)
-                            child: Container(
-                              decoration: BoxDecoration(
-                                color: Colors.blue,
-                                shape: BoxShape.circle,
-                                border: Border.all(color: Colors.white, width: 3),
+                            onChanged: (value) {
+                              setState(() => _searchQuery = value);
+                              _filterAndSearch();
+                            },
+                          ),
+                        ),
+                        IconButton(
+                          icon: Icon(_showFilters ? Icons.filter_list : Icons.filter_list_outlined),
+                          onPressed: () {
+                            setState(() => _showFilters = !_showFilters);
+                          },
+                        ),
+                      ],
+                    ),
+                    if (_showFilters) const SizedBox(height: 8),
+                    if (_showFilters)
+                      Column(
+                        children: [
+                          Row(
+                            children: [
+                              Expanded(child: _fuelTypeChips()),
+                              const SizedBox(width: 8),
+                              _priceFilterDropdown(),
+                            ],
+                          ),
+                          const SizedBox(height: 8),
+                          // Fuel type filter dropdown (filter stations by available fuel types)
+                          DropdownButtonFormField<FuelTypeFilter?>(
+                            value: _selectedFuelTypeFilter,
+                            decoration: InputDecoration(
+                              labelText: 'Filter by Available Fuel Types',
+                              prefixIcon: const Icon(Icons.filter_alt, size: 18),
+                              isDense: true,
+                              contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                              border: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(8),
                               ),
+                              filled: true,
+                              fillColor: Colors.grey.shade50,
                             ),
+                            items: [
+                              const DropdownMenuItem<FuelTypeFilter?>(
+                                value: null,
+                                child: Text('All Fuel Types'),
+                              ),
+                              ...FuelTypeFilter.values.map((filter) {
+                                return DropdownMenuItem<FuelTypeFilter?>(
+                                  value: filter,
+                                  child: Text(filter.label),
+                                );
+                              }),
+                            ],
+                            onChanged: (FuelTypeFilter? value) {
+                              setState(() {
+                                _selectedFuelTypeFilter = value;
+                                _filterAndSearch();
+                              });
+                            },
                           ),
                         ],
                       ),
                   ],
                 ),
-
-                // Floating search/filter card (top center) - Google Maps style
-                Positioned(
-                  left: 14,
-                  right: 14,
-                  top: 40,
-                  child: Material(
-                    elevation: 6,
-                    borderRadius: BorderRadius.circular(12),
-                    color: Colors.white,
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                      child: Column(
-                        children: [
-                          Row(
-                            children: [
-                              const Icon(Icons.search, color: Colors.black54),
-                              const SizedBox(width: 8),
-                              Expanded(
-                                child: TextField(
-                                  decoration: const InputDecoration(
-                                    isDense: true,
-                                    hintText: 'Search station or price...',
-                                    border: InputBorder.none,
-                                  ),
-                                  onChanged: (value) {
-                                    setState(() => _searchQuery = value);
-                                    _filterAndSearch();
-                                  },
-                                ),
-                              ),
-                              IconButton(
-                                icon: Icon(_showFilters ? Icons.filter_list : Icons.filter_list_outlined),
-                                onPressed: () {
-                                  setState(() => _showFilters = !_showFilters);
-                                },
-                              ),
-                            ],
-                          ),
-                          if (_showFilters) const SizedBox(height: 8),
-                          if (_showFilters)
-                            Row(
-                              children: [
-                                Expanded(child: _fuelTypeChips()),
-                                const SizedBox(width: 8),
-                                _priceFilterDropdown(),
-                              ],
-                            ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ),
-
-                // Map header legend (bottom-left)
-                Positioned(
-                  left: 14,
-                  bottom: 18,
-                  child: Material(
-                    elevation: 4,
-                    borderRadius: BorderRadius.circular(10),
-                    color: Colors.white,
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Row(
-                            children: [
-                              _LegendItem(color: Colors.green, label: 'Cheap'),
-                              const SizedBox(width: 8),
-                              _LegendItem(color: Colors.orange, label: 'Medium'),
-                              const SizedBox(width: 8),
-                              _LegendItem(color: Colors.red, label: 'Expensive'),
-                            ],
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ),
-                if (_showNavigationDashboard) _buildNavigationDashboard(),
-              ],
+              ),
             ),
+          ),
+
+          // Map header legend (bottom-left)
+          Positioned(
+            left: 14,
+            bottom: 18,
+            child: Material(
+              elevation: 4,
+              borderRadius: BorderRadius.circular(10),
+              color: Colors.white,
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Row(
+                      children: [
+                        _LegendItem(color: Colors.green, label: 'Cheap'),
+                        const SizedBox(width: 8),
+                        _LegendItem(color: Colors.yellow.shade600, label: 'Mid'),
+                        const SizedBox(width: 8),
+                        _LegendItem(color: Colors.red, label: 'Expensive'),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+          if (_showNavigationDashboard) _buildNavigationDashboard(),
+          // Minimized navigation header - shows when dashboard is hidden
+if (_isNavigating && !_showNavigationDashboard)
+  Positioned(
+    top: _showFilters ? 140 : 100,
+    left: 14,
+    right: 14,
+    child: Material(
+      elevation: 8,
+      borderRadius: BorderRadius.circular(16),
+      color: Colors.white,
+      child: InkWell(
+        onTap: () => setState(() => _showNavigationDashboard = true),
+        borderRadius: BorderRadius.circular(16),
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Row(
+            children: [
+              Icon(Icons.navigation, color: Colors.blue.shade600, size: 20),
+              const SizedBox(width: 8),
+              const Expanded(
+                child: Text(
+                  'Navigating to Gas Station',
+                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              // Maximize button
+              Icon(Icons.keyboard_arrow_down, color: Colors.blue.shade600, size: 20),
+            ],
+          ),
+        ),
+      ),
+    ),
+  ),
+        ],
+      ),
     );
 
   }
+
+  
 
   Widget _buildNavigationDashboard() {
     return Positioned(
@@ -739,23 +932,28 @@ class _MapTabState extends State<MapTab> {
             mainAxisSize: MainAxisSize.min,
             children: [
               // Header with destination info
-              Row(
-                children: [
-                  Icon(Icons.navigation, color: Colors.blue.shade600, size: 20),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      'Navigating to Gas Station',
-                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
-                      overflow: TextOverflow.ellipsis,
-                    ),
+              // Header with destination info
+            Row(
+              children: [
+                Icon(Icons.navigation, color: Colors.blue.shade600, size: 20),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'Navigating to Gas Station',
+                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                    overflow: TextOverflow.ellipsis,
                   ),
-                  IconButton(
-                    icon: const Icon(Icons.close, size: 18),
-                    onPressed: () => setState(() => _showNavigationDashboard = false),
-                  ),
-                ],
-              ),
+                ),
+                // Minimize/Maximize button
+                IconButton(
+                  icon: const Icon(Icons.keyboard_arrow_up, size: 20),
+                  onPressed: () => setState(() => _showNavigationDashboard = false),
+                  tooltip: 'Minimize',
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(),
+                ),
+              ],
+            ),
               const Divider(),
 
               // Time and Distance Row
@@ -862,7 +1060,7 @@ class _MapTabState extends State<MapTab> {
     return DropdownButtonHideUnderline(
       child: DropdownButton<String>(
         value: _selectedPriceFilter,
-        items: ['All', 'Cheap', 'Medium', 'Expensive'].map((value) {
+        items: ['All', 'Cheap', 'Mid', 'Expensive'].map((value) {
           return DropdownMenuItem<String>(
             value: value,
             child: Row(
@@ -889,8 +1087,8 @@ class _MapTabState extends State<MapTab> {
     switch (name) {
       case 'Cheap':
         return Colors.green;
-      case 'Medium':
-        return Colors.orange;
+      case 'Mid':
+        return Colors.yellow.shade700;
       case 'Expensive':
         return Colors.red;
       default:
@@ -899,61 +1097,69 @@ class _MapTabState extends State<MapTab> {
   }
 
   Map<String, double> _getPriceRanges() {
-    final prices = _gasStations
-        .map((s) => _getStationPrice(s, _selectedFuelType))
-        .where((p) => p != null)
-        .cast<double>()
-        .toList();
-
-    if (prices.isEmpty) return {'cheap': 50.0, 'expensive': 70.0};
-
-    prices.sort();
-
     return {
-      'cheap': prices[(prices.length / 3).floor()],
-      'expensive': prices[(prices.length * 2 / 3).floor()],
+      'cheap': _cheapPriceUpperBound,
+      'expensive': _expensivePriceLowerBound,
     };
   }
 
   double? _getStationPrice(GasStation station, String fuelType) {
     if (station.prices == null) return null;
-    return station.prices![fuelType];
+    final normalizedKey = fuelType.toLowerCase();
+    return station.prices![normalizedKey];
   }
 
+  // Color coding: Green = cheap, Yellow = mid, Red = expensive
   Color _colorForPriceWithRanges(double price, Map<String, double> ranges) {
-    if (price <= ranges['cheap']!) return Colors.green;
-    if (price <= ranges['expensive']!) return Colors.orange;
+    if (price < ranges['cheap']!) return Colors.green;
+    if (price <= ranges['expensive']!) return Colors.yellow.shade600;
     return Colors.red;
   }
 
   /// Create markers for the filtered list. Each marker color is computed from that station's price distribution.
   void _createMarkers() {
+    debugPrint('[MAP] Creating markers for ${_filteredGasStations.length} filtered stations');
+    
     final ranges = _getPriceRanges();
 
-    _markers = _filteredGasStations.map((station) {
+    _markers = _filteredGasStations.where((station) {
+      // Filter out stations with invalid positions (0,0) - both lat and lng must be non-zero
+      final isValidPosition = !(station.position.latitude == 0.0 && station.position.longitude == 0.0);
+      if (!isValidPosition) {
+        debugPrint('[MAP] Skipping station ${station.id} - invalid position (0,0)');
+      }
+      return isValidPosition;
+    }).map((station) {
       final price = _getStationPrice(station, _selectedFuelType);
       final rating = _calculateAverageRating(station.id ?? '');
 
       final markerColor = (price != null) ? _colorForPriceWithRanges(price, ranges) : Colors.grey;
+
+      debugPrint('[MAP] Creating marker for station: ${station.id}, name: ${station.name}');
+      debugPrint('[MAP] Position: ${station.position.latitude}, ${station.position.longitude}');
+      debugPrint('[MAP] Marker color: $markerColor');
 
       return Marker(
         point: station.position,
         width: 56 * _iconScale,
         height: 56 * _iconScale,
         // <-- use `child:` (some flutter_map versions expect child rather than builder)
-        child: _AnimatedGasStationMarker(
-          station: station,
-          markerColor: markerColor,
-          price: price,
-          rating: rating,
-          isOpen: station.isOpen,
-          iconSize: _iconScale,
-          isRegistered: station.isOwnerCreated ?? false, // Indicate if station is registered
-          onTap: () => _showStationModal(station),
+        child: RepaintBoundary(
+          child: _AnimatedGasStationMarker(
+            station: station,
+            markerColor: markerColor,
+            price: price,
+            rating: rating,
+            isOpen: station.isOpen,
+            iconSize: _iconScale,
+            isRegistered: station.isOwnerCreated ?? false, // Indicate if station is registered
+            onTap: () => _showStationModal(station),
+          ),
         ),
       );
     }).toList();
 
+    debugPrint('[MAP] Created ${_markers.length} markers');
     if (mounted) setState(() {});
   }
 
@@ -962,11 +1168,41 @@ class _MapTabState extends State<MapTab> {
       return _filteredGasStations[0].position;
     }
     if (_gasStations.isNotEmpty) return _gasStations[0].position;
-    return LatLng(7.9, 125.05);
+    // Use current location if available
+    if (_navigationService.currentLocation != null) {
+      return LatLng(
+        _navigationService.currentLocation!.latitude ?? 0.0,
+        _navigationService.currentLocation!.longitude ?? 0.0,
+      );
+    }
+    // Default center: Valencia City, Bukidnon, Philippines
+    // This provides a reasonable default location for the map when no stations or user location is available
+    return const LatLng(7.9055, 125.0908);
   }
 
   // ------------- modal bottom sheet to show station details -------------
   void _showStationModal(GasStation station) {
+    // Track station click interaction
+    final stationId = station.id ?? '';
+    final stationName = station.name ?? 'Unknown Station';
+    if (stationId.isNotEmpty) {
+      UserInteractionService.trackStationClick(
+        stationId: stationId,
+        stationName: stationName,
+      );
+    }
+    
+    // Track price view if price is available
+    final price = _getStationPrice(station, _selectedFuelType);
+    if (price != null && stationId.isNotEmpty) {
+      UserInteractionService.trackPriceView(
+        stationId: stationId,
+        stationName: stationName,
+        fuelType: _selectedFuelType.toLowerCase(),
+        price: price,
+      );
+    }
+    
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -974,7 +1210,6 @@ class _MapTabState extends State<MapTab> {
         borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
       ),
       builder: (context) {
-        final price = _getStationPrice(station, _selectedFuelType);
 
         // Calculate additional padding when navigation is active
         final additionalPadding = _isNavigating ? 100.0 : 0.0;
@@ -1538,10 +1773,12 @@ class _AnimatedGasStationMarkerState extends State<_AnimatedGasStationMarker>
     super.dispose();
   }
 
+  // Color coding: Green = cheap, Yellow = medium, Red = expensive
+  // Simplified: Use the marker color for badge (already computed from price ranges in parent)
   Color _getPriceBadgeColor(double price) {
-    if (price <= 55) return Colors.green;
-    if (price <= 60) return Colors.orange;
-    return Colors.red;
+    // Use the marker color which is already based on price ranges
+    // This ensures consistency with the marker border color
+    return widget.markerColor;
   }
 
   @override

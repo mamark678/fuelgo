@@ -148,6 +148,8 @@ class OwnerDashboardScreenState extends State<OwnerDashboardScreen> {
     }
   }
 
+  
+
   @override
   Widget build(BuildContext context) {
     if (_isLoading) {
@@ -168,9 +170,28 @@ class OwnerDashboardScreenState extends State<OwnerDashboardScreen> {
             tooltip: 'Analytics',
           ),
           IconButton(
-            icon: const Icon(Icons.refresh),
-            onPressed: refreshDashboard,
-            tooltip: 'Refresh Data',
+            icon: const Icon(Icons.history),
+            onPressed: () {
+              if (_userId == null || _userId!.isEmpty) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('Owner information not available yet.'),
+                    backgroundColor: Colors.red,
+                  ),
+                );
+                return;
+              }
+
+              Navigator.pushNamed(
+                context,
+                '/gas-price-history',
+                arguments: {
+                  'ownerId': _userId!,
+                  'assignedStations': _assignedStations,
+                },
+              );
+            },
+            tooltip: 'Gas Prices History',
           ),
           IconButton(
             icon: const Icon(Icons.logout),
