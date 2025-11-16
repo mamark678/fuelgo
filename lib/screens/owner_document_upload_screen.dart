@@ -4,7 +4,6 @@ import 'dart:io';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:firebase_storage/firebase_storage.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:image_picker/image_picker.dart';
@@ -372,23 +371,6 @@ class _OwnerDocumentUploadScreenState extends State<OwnerDocumentUploadScreen> {
       return false;
     }
     return true;
-  }
-
-  Future<String?> _uploadDocumentToStorage(File file, String documentType, String userId) async {
-    try {
-      final storageRef = FirebaseStorage.instance
-          .ref()
-          .child('owner_documents')
-          .child(userId)
-          .child('$documentType.jpg');
-      
-      await storageRef.putFile(file);
-      final downloadUrl = await storageRef.getDownloadURL();
-      return downloadUrl;
-    } catch (e) {
-      print('Error uploading $documentType: $e');
-      return null;
-    }
   }
 
   Future<void> _createGasStation() async {
