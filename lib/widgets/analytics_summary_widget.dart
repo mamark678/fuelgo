@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:fuelgo/models/analytics_data.dart';
+import 'package:fuelgo/widgets/animated_count_text.dart';
 
 class AnalyticsSummaryWidget extends StatelessWidget {
   final List<AnalyticsData> analyticsData;
@@ -46,28 +47,77 @@ class AnalyticsSummaryWidget extends StatelessWidget {
               _buildSummaryCard(
                 context,
                 'Total Stations',
-                summary.totalStations.toString(),
+                AnimatedCountText(
+                  value: summary.totalStations,
+                  decimalPlaces: 0,
+                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.bold,
+                        color: Colors.blue,
+                        fontSize: 20,
+                      ),
+                ),
                 Icons.local_gas_station,
                 Colors.blue,
               ),
               _buildSummaryCard(
                 context,
                 'Average Price',
-                '\$${summary.averagePrice.toStringAsFixed(2)}',
+                AnimatedCountText(
+                  value: summary.averagePrice,
+                  prefix: '\$',
+                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.bold,
+                        color: Colors.green,
+                        fontSize: 20,
+                      ),
+                ),
                 Icons.attach_money,
                 Colors.green,
               ),
               _buildSummaryCard(
                 context,
                 'Price Range',
-                '\$${summary.minPrice.toStringAsFixed(2)} - \$${summary.maxPrice.toStringAsFixed(2)}',
+                Text(
+                  '\$${summary.minPrice.toStringAsFixed(2)} - \$${summary.maxPrice.toStringAsFixed(2)}',
+                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.bold,
+                        color: Colors.orange,
+                        fontSize: 16,
+                      ),
+                  textAlign: TextAlign.center,
+                ),
                 Icons.trending_up,
                 Colors.orange,
               ),
               _buildSummaryCard(
                 context,
                 'Active Trends',
-                '${summary.increasingTrends}↑ ${summary.decreasingTrends}↓',
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    AnimatedCountText(
+                      value: summary.increasingTrends,
+                      suffix: '↑',
+                      decimalPlaces: 0,
+                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                            fontWeight: FontWeight.bold,
+                            color: Colors.purple,
+                            fontSize: 18,
+                          ),
+                    ),
+                    const SizedBox(width: 8),
+                    AnimatedCountText(
+                      value: summary.decreasingTrends,
+                      suffix: '↓',
+                      decimalPlaces: 0,
+                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                            fontWeight: FontWeight.bold,
+                            color: Colors.purple,
+                            fontSize: 18,
+                          ),
+                    ),
+                  ],
+                ),
                 Icons.analytics,
                 Colors.purple,
               ),
@@ -88,7 +138,7 @@ class AnalyticsSummaryWidget extends StatelessWidget {
   Widget _buildSummaryCard(
     BuildContext context,
     String title,
-    String value,
+    Widget valueWidget,
     IconData icon,
     Color color,
   ) {
@@ -125,14 +175,7 @@ class AnalyticsSummaryWidget extends StatelessWidget {
               textAlign: TextAlign.center,
             ),
             const SizedBox(height: 4),
-            Text(
-              value,
-              style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                    fontWeight: FontWeight.bold,
-                    color: color,
-                  ),
-              textAlign: TextAlign.center,
-            ),
+            valueWidget,
           ],
         ),
       ),
@@ -156,11 +199,13 @@ class AnalyticsSummaryWidget extends StatelessWidget {
     final minPrice = prices.reduce((a, b) => a < b ? a : b);
     final maxPrice = prices.reduce((a, b) => a > b ? a : b);
 
-    final increasingTrends = analyticsData.where((data) => data.isPriceIncreasing).length;
+    final increasingTrends =
+        analyticsData.where((data) => data.isPriceIncreasing).length;
     final decreasingTrends = analyticsData.length - increasingTrends;
 
     // Get unique stations
-    final uniqueStations = analyticsData.map((data) => data.stationId).toSet().length;
+    final uniqueStations =
+        analyticsData.map((data) => data.stationId).toSet().length;
 
     return _SummaryData(
       totalStations: uniqueStations,

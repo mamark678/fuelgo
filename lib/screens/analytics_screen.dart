@@ -8,14 +8,12 @@ import 'package:fuelgo/services/auth_service.dart';
 import 'package:fuelgo/services/firestore_service.dart';
 import 'package:fuelgo/services/user_interaction_service.dart';
 import 'package:fuelgo/services/user_preferences_service.dart';
-import 'package:fuelgo/widgets/analytics_card_widget.dart';
+import 'package:fuelgo/widgets/all_stations_analytics_widgets.dart';
 import 'package:fuelgo/widgets/analytics_summary_widget.dart';
-import 'package:fuelgo/widgets/enhanced_market_trends_widget.dart';
 import 'package:fuelgo/widgets/enhanced_price_chart_widget.dart';
+import 'package:fuelgo/widgets/gas_station_analytics_tile.dart';
 import 'package:fuelgo/widgets/price_comparison_widget.dart';
 import 'package:fuelgo/widgets/price_prediction_widget.dart';
-import 'package:fuelgo/widgets/station_selector_widget.dart';
-import 'package:fuelgo/widgets/user_interaction_analytics_widget.dart';
 
 class AnalyticsScreen extends StatefulWidget {
   const AnalyticsScreen({super.key});
@@ -39,6 +37,7 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
   int _stationListReloadKey = 0;
   Future<List<Map<String, dynamic>>>? _stationsFuture;
   final UserPreferencesService _prefsService = UserPreferencesService();
+  bool _isOwner = false;
 
   // Ratings data structure: stationId => { userId: { name, rating, comment } }
   Map<String, Map<String, Map<String, dynamic>>> _ratings = {};
@@ -47,7 +46,8 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
   @override
   void initState() {
     super.initState();
-    _selectedFuelType = null; // Initialize to 'regular' to load analytics immediately
+    _selectedFuelType =
+        null; // Initialize to 'regular' to load analytics immediately
     _stationsFuture = FirestoreService.getAllGasStations();
     _initializeDefaultTab();
     _loadAnalyticsData();
@@ -68,10 +68,11 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
           final userData = userDoc.data() as Map<String, dynamic>;
           final userRole = userData['role'] ?? 'customer';
 
-          // If user is an owner, default to Market Trends tab
+          // If user is an owner, default to Market Trends tab (Wait, no, I changed this to Analytics tab)
           if (userRole == 'owner') {
             setState(() {
-              _selectedTabIndex = 1; // Market Trends tab
+              _isOwner = true;
+              _selectedTabIndex = 0; // My Analytics tab
             });
           }
         }
@@ -89,7 +90,10 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
   }
 
   void _setupRatingsRealtimeListener() {
-    _ratingsSubscription = FirebaseFirestore.instance.collection('station_ratings').snapshots().listen((snapshot) {
+    _ratingsSubscription = FirebaseFirestore.instance
+        .collection('station_ratings')
+        .snapshots()
+        .listen((snapshot) {
       // Build map: stationId => { userId: { name, rating, comment } }
       final Map<String, Map<String, Map<String, dynamic>>> rebuilt = {};
       for (final doc in snapshot.docs) {
@@ -101,7 +105,9 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
         rebuilt[stationId] ??= {};
         rebuilt[stationId]![userId] = {
           'name': data['userName'] ?? userId,
-          'rating': (data['rating'] is num) ? (data['rating'] as num).toDouble() : 0.0,
+          'rating': (data['rating'] is num)
+              ? (data['rating'] as num).toDouble()
+              : 0.0,
           'comment': data['comment'] ?? '',
         };
       }
@@ -125,15 +131,17 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
       final user = AuthService().currentUser;
       if (user != null) {
         final daysBack = _getDaysBackFromPeriod(_selectedTimePeriod);
-        
+
         List<AnalyticsData> analytics;
-        if (_selectedTabIndex == 0) { // Owner analytics
+        if (_selectedTabIndex == 0) {
+          // Owner analytics
           analytics = await AnalyticsService.getOwnerAnalytics(
             ownerId: user.uid,
             fuelType: _selectedFuelType,
             daysBack: daysBack,
           );
-        } else { // Market trends
+        } else {
+          // Market trends
           analytics = await AnalyticsService.getMarketTrends(
             fuelType: _selectedFuelType,
             daysBack: daysBack,
@@ -160,7 +168,8 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
       }
     } catch (e) {
       // Handle error - check if it's a permission denied error
-      if (e.toString().contains('PERMISSION_DENIED') || e.toString().contains('Missing or insufficient permissions')) {
+      if (e.toString().contains('PERMISSION_DENIED') ||
+          e.toString().contains('Missing or insufficient permissions')) {
         // User is likely logged out, clear analytics data
         setState(() {
           _analyticsData = [];
@@ -216,13 +225,13 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
           _selectedStationAnalytics = analytics;
           _selectedStationId = stationId;
         });
-        
+
         // Track analytics view
         UserInteractionService.trackAnalyticsView(
           stationId: stationId,
           fuelType: fuelType,
         );
-        
+
         // Track price view
         if (analytics.currentPrice > 0) {
           UserInteractionService.trackPriceView(
@@ -248,16 +257,14 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
   Widget build(BuildContext context) {
     return FutureBuilder<bool>(
       future: _isUserOwner(),
-      builder: (context, snapshot) {
-        final isOwner = snapshot.data ?? false;
-
-        if (isOwner) {
-          // For owners, show only Market Trends
+      builder: (context, _) {
+        if (_isOwner) {
+          // For owners, show only My Analytics (their own stations)
           return Scaffold(
             appBar: AppBar(
               title: const Text('Analytics'),
             ),
-            body: _buildMarketTrendsTab(),
+            body: _buildAnalyticsTab(),
           );
         } else {
           // For regular users, show both tabs
@@ -314,188 +321,237 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
   }
 
   Widget _buildAnalyticsTab() {
-    final user = AuthService().currentUser;
+    final theme = Theme.of(context);
 
     return RefreshIndicator(
       onRefresh: _loadAnalyticsData,
       child: ListView(
         padding: const EdgeInsets.all(16),
         children: [
-        const Center(
-          child: Column(
-            children: [
-              CircleAvatar(
-                radius: 40,
-                backgroundColor: Colors.blue,
-                child: Icon(
-                  Icons.analytics,
-                  size: 40,
-                  color: Colors.white,
-                ),
-              ),
-              SizedBox(height: 16),
-              Text(
-                'Price Analytics',
-                style: TextStyle(
-                  fontSize: 24,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-              Text(
-                'Detailed price analysis for your stations',
-                style: TextStyle(
-                  fontSize: 16,
-                  color: Colors.grey,
-                ),
-              ),
-            ],
-          ),
-        ),
-
-        const SizedBox(height: 24),
-
-        // Analytics Summary Section
-        AnalyticsSummaryWidget(
-          analyticsData: _analyticsData,
-          isLoading: _isLoading,
-        ),
-
-        const SizedBox(height: 24),
-
-        // Price Analytics Section
-        if (_selectedStationAnalytics != null) ...[
-          _buildSectionCard(
-            title: 'Price Analytics',
-            icon: Icons.show_chart,
-            iconColor: Colors.blue,
-            child: EnhancedPriceChartWidget(
-              analyticsData: _selectedStationAnalytics!,
-              chartHeight: 350,
-              showTitle: true,
-            ),
-          ),
-          const SizedBox(height: 24),
-          
-          // Price Prediction Section
-          _buildSectionCard(
-            title: 'Price Prediction',
-            icon: Icons.trending_up,
-            iconColor: Colors.orange,
-            child: PricePredictionWidget(
-              analyticsData: _selectedStationAnalytics!,
-              predictionDays: 7,
-            ),
-          ),
-        ] else if (_isLoadingStationAnalytics)
+          // Modern Header with Gradient
           Container(
-            padding: const EdgeInsets.all(32),
-            child: const Center(child: CircularProgressIndicator()),
-          )
-        else
-          Container(
-            padding: const EdgeInsets.all(32),
+            padding: const EdgeInsets.all(24),
             decoration: BoxDecoration(
-              color: Colors.grey[100],
-              borderRadius: BorderRadius.circular(12),
-            ),
-            child: Center(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(Icons.local_gas_station, size: 64, color: Colors.grey[400]),
-                  const SizedBox(height: 16),
-                  const Text(
-                    'Select a gas station below to view price history',
-                    style: TextStyle(
-                      color: Colors.grey,
-                      fontSize: 16,
-                    ),
-                    textAlign: TextAlign.center,
-                  ),
+              gradient: LinearGradient(
+                colors: [
+                  theme.primaryColor,
+                  theme.primaryColor.withOpacity(0.7)
                 ],
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
               ),
+              borderRadius: BorderRadius.circular(16),
+              boxShadow: [
+                BoxShadow(
+                  color: theme.primaryColor.withOpacity(0.3),
+                  blurRadius: 12,
+                  offset: const Offset(0, 6),
+                ),
+              ],
+            ),
+            child: Column(
+              children: [
+                Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: Colors.white.withOpacity(0.2),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: const Icon(
+                        Icons.analytics_outlined,
+                        size: 32,
+                        color: Colors.white,
+                      ),
+                    ),
+                    const SizedBox(width: 16),
+                    const Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'My Analytics',
+                            style: TextStyle(
+                              fontSize: 24,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.white,
+                            ),
+                          ),
+                          SizedBox(height: 4),
+                          Text(
+                            'Track your stations performance',
+                            style: TextStyle(
+                              fontSize: 14,
+                              color: Colors.white70,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ],
             ),
           ),
 
-        const SizedBox(height: 24),
+          const SizedBox(height: 24),
 
-        // User Interaction Analytics
-        const UserInteractionAnalyticsWidget(),
+          // Chip-Style Time Period Selector at Top
+          _buildChipTimePeriodSelector(),
 
-        const SizedBox(height: 24),
+          const SizedBox(height: 24),
 
-        // Price Comparison Section (if multiple stations selected)
-        if (_analyticsData.length > 1 && _selectedFuelType != null) ...[
-          Builder(
-            builder: (context) {
-              final comparisonList = _analyticsData.where((a) => a.fuelType.toLowerCase() == _selectedFuelType!.toLowerCase()).toList();
-              
-              // Track price comparison interaction
-              if (comparisonList.length > 1) {
-                final stationIds = comparisonList.map((a) => a.stationId).toList();
-                UserInteractionService.trackPriceComparison(
-                  stationIds: stationIds,
+          // Analytics Summary Section
+          AnalyticsSummaryWidget(
+            analyticsData: _analyticsData,
+            isLoading: _isLoading,
+          ),
+
+          const SizedBox(height: 24),
+
+          // Price Analytics Section
+          if (_selectedStationAnalytics != null) ...[
+            _buildSectionCard(
+              title: 'Price Analytics',
+              icon: Icons.show_chart,
+              iconColor: Colors.blue,
+              child: EnhancedPriceChartWidget(
+                analyticsData: _selectedStationAnalytics!,
+                chartHeight: 350,
+                showTitle: true,
+              ),
+            ),
+            const SizedBox(height: 24),
+
+            // Price Prediction Section
+            _buildSectionCard(
+              title: 'Price Prediction',
+              icon: Icons.trending_up,
+              iconColor: Colors.orange,
+              child: PricePredictionWidget(
+                analyticsData: _selectedStationAnalytics!,
+                predictionDays: 7,
+              ),
+            ),
+          ] else if (_isLoadingStationAnalytics)
+            Container(
+              padding: const EdgeInsets.all(32),
+              child: const Center(child: CircularProgressIndicator()),
+            )
+          else
+            Container(
+              padding: const EdgeInsets.all(32),
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  colors: [Colors.grey[50]!, Colors.grey[100]!],
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                ),
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: Colors.grey[300]!, width: 1),
+              ),
+              child: Center(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(16),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        shape: BoxShape.circle,
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.grey.withOpacity(0.2),
+                            blurRadius: 8,
+                            offset: const Offset(0, 4),
+                          ),
+                        ],
+                      ),
+                      child: Icon(Icons.local_gas_station,
+                          size: 48, color: theme.primaryColor),
+                    ),
+                    const SizedBox(height: 16),
+                    const Text(
+                      'Select a gas station',
+                      style: TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      'Choose a station below to view detailed price history',
+                      style: TextStyle(
+                        color: Colors.grey[600],
+                        fontSize: 14,
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
+                  ],
+                ),
+              ),
+            ),
+
+          const SizedBox(height: 24),
+
+          // Price Comparison Section (if multiple stations selected)
+          if (_analyticsData.length > 1 && _selectedFuelType != null) ...[
+            Builder(
+              builder: (context) {
+                final comparisonList = _analyticsData
+                    .where((a) =>
+                        a.fuelType.toLowerCase() ==
+                        _selectedFuelType!.toLowerCase())
+                    .toList();
+
+                // Track price comparison interaction
+                if (comparisonList.length > 1) {
+                  final stationIds =
+                      comparisonList.map((a) => a.stationId).toList();
+                  UserInteractionService.trackPriceComparison(
+                    stationIds: stationIds,
+                    fuelType: _selectedFuelType!,
+                  );
+                }
+
+                return PriceComparisonWidget(
+                  analyticsList: comparisonList,
                   fuelType: _selectedFuelType!,
                 );
-              }
-              
-              return PriceComparisonWidget(
-                analyticsList: comparisonList,
-                fuelType: _selectedFuelType!,
-              );
-            },
-          ),
-        ],
-
-        const SizedBox(height: 24),
-
-        // Gas Station Selection Below Chart
-        if (user != null && _selectedTabIndex == 0)
-          _buildStationListWidget(user.uid),
-
-        const SizedBox(height: 16),
-
-        // Time Period Selector
-        _buildTimePeriodSelector(),
-
-        const SizedBox(height: 16),
-
-        if (_isLoading)
-          const Center(child: CircularProgressIndicator())
-        else if (_analyticsData.isEmpty)
-          const Center(child: Text('No analytics data available'))
-        else
-          GridView.count(
-            crossAxisCount: 2,
-            shrinkWrap: true,
-            physics: const NeverScrollableScrollPhysics(),
-            childAspectRatio: 1.3,
-            mainAxisSpacing: 12,
-            crossAxisSpacing: 12,
-            children: _analyticsData.map((analytics) => AnalyticsCardWidget(
-              analyticsData: analytics,
-              onTap: () {
-                setState(() {
-                  _selectedAnalytics = analytics;
-                });
               },
-              isSelected: _selectedAnalytics?.stationId == analytics.stationId &&
-                         _selectedAnalytics?.fuelType == analytics.fuelType,
-              compact: true,
-            )).toList(),
-          ),
-      ],
-    ),
+            ),
+            const SizedBox(height: 24),
+          ],
+
+          // Gas Station Selection
+          _buildStationListWidget(),
+
+          const SizedBox(height: 16),
+
+          if (_isLoading)
+            const Center(child: CircularProgressIndicator())
+          else if (_analyticsData.isEmpty)
+            Container(
+              padding: const EdgeInsets.all(32),
+              decoration: BoxDecoration(
+                color: Colors.grey[100],
+                borderRadius: BorderRadius.circular(12),
+              ),
+            )
+        ],
+      ),
     );
   }
 
-  Widget _buildStationListWidget(String ownerId) {
+  Widget _buildStationListWidget() {
     Map<String, double> _normalizePricesMap(Map<String, dynamic> prices) {
       final Map<String, double> normalized = {};
       prices.forEach((key, value) {
         final normalizedKey = key.toLowerCase();
         final price = (value as num).toDouble();
-        if (!normalized.containsKey(normalizedKey) || price < normalized[normalizedKey]!) {
+        if (!normalized.containsKey(normalizedKey) ||
+            price < normalized[normalizedKey]!) {
           normalized[normalizedKey] = price;
         }
       });
@@ -515,28 +571,31 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
         }
 
         final allStations = snapshot.data ?? [];
-        print('DEBUG ANALYTICS: Total stations loaded: ${allStations.length}');
-        for (var i = 0; i < allStations.length; i++) {
-          final station = allStations[i];
-          print('DEBUG ANALYTICS: Station ${i + 1}: ID=${station['id']}, Name=${station['name']}, Brand=${station['brand']}');
+
+        // Filter stations based on role if necessary
+        final List<Map<String, dynamic>> visibleStations;
+        if (_isOwner) {
+          final user = AuthService().currentUser;
+          visibleStations =
+              allStations.where((s) => s['ownerId'] == user?.uid).toList();
+        } else {
+          visibleStations = allStations;
         }
 
         final filteredStations = _searchQuery.isEmpty
-            ? allStations
-            : allStations.where((station) {
+            ? visibleStations
+            : visibleStations.where((station) {
                 final name = (station['name'] ?? '').toLowerCase();
                 final brand = (station['brand'] ?? '').toLowerCase();
                 final query = _searchQuery.toLowerCase();
                 return name.contains(query) || brand.contains(query);
               }).toList();
 
-        print('DEBUG ANALYTICS: Filtered stations count: ${filteredStations.length}');
-
         if (allStations.isEmpty) {
           return const Center(child: Text('No gas stations found'));
         }
 
-        // Collect all normalized fuel types from all stations for dropdown
+        // Collect all normalized fuel types from all stations for chip selector
         final Set<String> allFuelTypes = {};
         for (final station in filteredStations) {
           final prices = station['prices'] as Map<String, dynamic>? ?? {};
@@ -545,19 +604,21 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
         }
         final sortedFuelTypes = allFuelTypes.toList()..sort();
 
+        final theme = Theme.of(context);
+
         return Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
               child: Text(
-                'Select Gas Station for Price History',
-                style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                      fontWeight: FontWeight.bold,
-                    ),
+                'Explore Stations',
+                style: theme.textTheme.titleMedium?.copyWith(
+                  fontWeight: FontWeight.bold,
+                  fontSize: 18,
+                ),
               ),
             ),
-            // Search Bar
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
               child: TextField(
@@ -566,21 +627,99 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
                   prefixIcon: const Icon(Icons.search),
                   border: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(12),
+                    borderSide: BorderSide.none,
                   ),
                   filled: true,
                   fillColor: Colors.grey[100],
+                  contentPadding:
+                      const EdgeInsets.symmetric(vertical: 0, horizontal: 16),
                 ),
                 onChanged: (value) {
                   setState(() {
                     _searchQuery = value;
                   });
                 },
-                onSubmitted: (value) {
-                  // Removed reload on Enter as per user request
-                },
               ),
             ),
-            // Station List
+
+            // Modern Chip-based Fuel Type Selection
+            SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+              child: Row(
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.only(right: 8),
+                    child: ChoiceChip(
+                      label: const Text('All Fuels'),
+                      selected: _selectedFuelType == null,
+                      onSelected: (selected) {
+                        if (selected) {
+                          setState(() {
+                            _selectedFuelType = null;
+                            if (_selectedStationId != null) {
+                              // Start with fresh analytics if changing context, usually keep station but clear fuel context or reloading analytics
+                              // The existing logic passed _selectedFuelType which becomes null here
+                              _loadStationAnalytics(_selectedStationId!, null);
+                            } else {
+                              _selectedStationAnalytics = null;
+                            }
+                          });
+                        }
+                      },
+                      selectedColor: theme.primaryColor,
+                      labelStyle: TextStyle(
+                        color: _selectedFuelType == null
+                            ? Colors.white
+                            : Colors.black87,
+                        fontWeight: FontWeight.w600,
+                      ),
+                      backgroundColor: Colors.grey[200],
+                      side: BorderSide.none,
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(20)),
+                      showCheckmark: false,
+                    ),
+                  ),
+                  ...sortedFuelTypes.map((type) {
+                    final isSelected = _selectedFuelType == type;
+                    return Padding(
+                      padding: const EdgeInsets.only(right: 8),
+                      child: ChoiceChip(
+                        label: Text(type.toUpperCase()),
+                        selected: isSelected,
+                        onSelected: (selected) {
+                          if (selected) {
+                            setState(() {
+                              _selectedFuelType = type;
+                              if (_selectedStationId != null) {
+                                _loadStationAnalytics(
+                                    _selectedStationId!, type);
+                              } else {
+                                // Keep current station selection if any, just reload logic handles it?
+                                // If no station selected, analytics is null.
+                              }
+                            });
+                          }
+                        },
+                        selectedColor: theme.primaryColor,
+                        labelStyle: TextStyle(
+                          color: isSelected ? Colors.white : Colors.black87,
+                          fontWeight: FontWeight.w600,
+                        ),
+                        backgroundColor: Colors.grey[200],
+                        side: BorderSide.none,
+                        shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(20)),
+                        showCheckmark: false,
+                      ),
+                    );
+                  }).toList(),
+                ],
+              ),
+            ),
+
+            // Station List with new Tile Widget
             ListView.builder(
               shrinkWrap: true,
               physics: const NeverScrollableScrollPhysics(),
@@ -588,228 +727,36 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
               itemCount: filteredStations.length,
               itemBuilder: (context, index) {
                 final station = filteredStations[index];
-                return _buildGasStationTile(station);
-              },
-            ),
-            // Fuel Type Selection
-            Padding(
-              padding: const EdgeInsets.all(16),
-              child: DropdownButtonFormField<String>(
-                value: _selectedFuelType != null ? _selectedFuelType!.toLowerCase() : null,
-                decoration: const InputDecoration(
-                  labelText: 'Select Fuel Type',
-                  border: OutlineInputBorder(),
-                ),
-                items: [
-                  const DropdownMenuItem(
-                    value: null,
-                    child: Text('All Fuel Types'),
-                  ),
-                  ...sortedFuelTypes.map((type) {
-                    return DropdownMenuItem(
-                      value: type,
-                      child: Text(type.toUpperCase()),
+                final stationId = station['id']?.toString();
+                final isSelected = _selectedStationId == stationId;
+
+                final rating =
+                    _calculateAverageRating(_ratings[stationId ?? '']);
+
+                return GasStationAnalyticsTile(
+                  station: station,
+                  isSelected: isSelected,
+                  selectedFuelType: _selectedFuelType,
+                  rating: rating,
+                  prefsService: _prefsService,
+                  onTap: (selectedId) {
+                    // Track interaction
+                    UserInteractionService.trackStationClick(
+                      stationId: selectedId,
+                      stationName: station['name'] ?? 'Unknown',
                     );
-                  }).toList(),
-                ],
-                onChanged: (fuelType) {
-                  setState(() {
-                    _selectedFuelType = fuelType;
-                    if (_selectedStationId != null) {
-                      _loadStationAnalytics(_selectedStationId!, fuelType);
-                    } else {
-                      _selectedStationAnalytics = null;
-                    }
-                  });
-                },
-              ),
+
+                    setState(() {
+                      _selectedStationId = selectedId;
+                      _loadStationAnalytics(selectedId, _selectedFuelType);
+                    });
+                  },
+                );
+              },
             ),
           ],
         );
       },
-    );
-  }
-
-  Widget _buildGasStationTile(Map<String, dynamic> station) {
-    final stationId = station['id']?.toString();
-    final stationName = station['name']?.toString() ?? 'Unknown Station';
-    final brand = station['brand']?.toString() ?? '';
-    final pricesRaw = station['prices'] as Map<String, dynamic>? ?? {};
-    final prices = <String, double>{};
-    pricesRaw.forEach((key, value) {
-      final normalizedKey = key.toLowerCase();
-      final price = (value as num).toDouble();
-      if (!prices.containsKey(normalizedKey) || price < prices[normalizedKey]!) {
-        prices[normalizedKey] = price;
-      }
-    });
-    final isSelected = _selectedStationId == stationId;
-
-    // Get marker color based on brand
-    final markerColor = _getMarkerColor(brand);
-
-    return Card(
-      margin: const EdgeInsets.symmetric(horizontal: 0, vertical: 4),
-      elevation: isSelected ? 4 : 2,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(12),
-        side: BorderSide(
-          color: isSelected ? Colors.blue : Colors.transparent,
-          width: 2,
-        ),
-      ),
-      child: InkWell(
-        onTap: () {
-          // Track user interaction
-          if (stationId != null) {
-            UserInteractionService.trackStationClick(
-              stationId: stationId,
-              stationName: stationName,
-            );
-          }
-          
-          setState(() {
-            _selectedStationId = stationId;
-            if (stationId != null) {
-              _loadStationAnalytics(stationId, _selectedFuelType);
-            } else {
-              _selectedStationAnalytics = null;
-            }
-          });
-        },
-        borderRadius: BorderRadius.circular(12),
-        child: Padding(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  CircleAvatar(
-                    radius: 20,
-                    backgroundColor: Color(markerColor).withOpacity(0.2),
-                    child: Text(
-                      (brand.isNotEmpty ? brand[0] : 'G').toUpperCase(),
-                      style: TextStyle(
-                        color: Color(markerColor),
-                        fontWeight: FontWeight.bold,
-                        fontSize: 16,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          stationName,
-                          style: const TextStyle(
-                            fontSize: 16,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                        const SizedBox(height: 2),
-                        Text(
-                          brand,
-                          style: TextStyle(
-                            fontSize: 14,
-                            color: Colors.grey[600],
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.end,
-                    children: [
-                      _buildRatingStars(_calculateAverageRating(_ratings[station['id'] ?? ''])),
-                      const SizedBox(height: 4),
-                      Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                        decoration: BoxDecoration(
-                          color: Colors.green.shade50,
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                        child: const Text(
-                          'Open',
-                          style: TextStyle(
-                            color: Colors.green,
-                            fontSize: 12,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-              const SizedBox(height: 12),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Row(
-                    children: [
-                      IconButton(
-                        icon: Icon(
-                          _prefsService.isFavorite(station['id'] ?? '') ? Icons.favorite : Icons.favorite_border,
-                          color: _prefsService.isFavorite(station['id'] ?? '') ? Colors.red : Colors.grey,
-                          size: 20,
-                        ),
-                        onPressed: () {
-                          _prefsService.toggleFavoriteStation(station['id'] ?? '');
-                          setState(() {});
-                        },
-                        tooltip: _prefsService.isFavorite(station['id'] ?? '') ? 'Remove from favorites' : 'Add to favorites',
-                        padding: EdgeInsets.zero,
-                        constraints: const BoxConstraints(),
-                      ),
-                      const SizedBox(width: 8),
-                      // Removed navigate button as per request
-                    ],
-                  ),
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.end,
-                    children: [
-                      Text(
-                        '₱${_selectedFuelType != null && prices[_selectedFuelType!.toLowerCase()] != null ? prices[_selectedFuelType!.toLowerCase()]!.toStringAsFixed(2) : 'N/A'}',
-                        style: const TextStyle(
-                          fontSize: 18,
-                          fontWeight: FontWeight.bold,
-                          color: Colors.green,
-                        ),
-                      ),
-                      const Text(
-                        '/L',
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: Colors.grey,
-                        ),
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildRatingStars(double rating) {
-    final fullCount = rating.floor();
-    return Row(
-      children: List.generate(
-        5,
-        (index) => Icon(
-          index < fullCount ? Icons.star : Icons.star_border,
-          color: Colors.amber,
-          size: 14,
-        ),
-      ),
     );
   }
 
@@ -827,216 +774,68 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
     return count == 0 ? 0.0 : sum / count;
   }
 
-  int _getMarkerColor(String brand) {
-    switch (brand.toLowerCase()) {
-      case 'shell':
-        return Colors.red.value;
-      case 'petron':
-        return Colors.blue.value;
-      case 'caltex':
-        return Colors.green.value;
-      case 'unioil':
-        return Colors.orange.value;
-      default:
-        return Colors.grey.value;
-    }
-  }
-
-  Widget _buildStationSelectionWidget(String ownerId) {
-    return StationSelectorWidget(
-      ownerId: ownerId,
-      selectedStationId: _selectedStationId,
-      selectedFuelType: _selectedFuelType,
-      onStationChanged: (stationId) {
-        setState(() {
-          _selectedStationId = stationId;
-          if (stationId != null && _selectedFuelType != null) {
-            _loadStationAnalytics(stationId, _selectedFuelType!);
-          } else {
-            _selectedStationAnalytics = null;
-          }
-        });
-      },
-      onFuelTypeChanged: (fuelType) {
-        setState(() {
-          _selectedFuelType = fuelType;
-          if (_selectedStationId != null && fuelType != null) {
-            _loadStationAnalytics(_selectedStationId!, fuelType);
-          } else {
-            _selectedStationAnalytics = null;
-          }
-        });
-      },
-    );
-  }
-
   Widget _buildMarketTrendsTab() {
-    return RefreshIndicator(
-      onRefresh: _loadAnalyticsData,
-      child: ListView(
-        padding: const EdgeInsets.all(16),
-        children: [
-        Center(
-          child: Column(
-            children: [
-              Container(
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: Colors.green.withOpacity(0.1),
-                  shape: BoxShape.circle,
-                ),
-                child: const Icon(
-                  Icons.trending_up,
-                  size: 48,
-                  color: Colors.green,
-                ),
-              ),
-              const SizedBox(height: 16),
-              const Text(
-                'Market Trends',
-                style: TextStyle(
-                  fontSize: 24,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-              Text(
-                'Regional Price Analysis',
-                style: TextStyle(
-                  fontSize: 16,
-                  color: Colors.grey[600],
-                ),
-              ),
-            ],
-          ),
-        ),
-
-        const SizedBox(height: 24),
-
-        // Enhanced Market Trends Widget
-        if (_selectedTabIndex == 1) // Only show in market trends tab
-          EnhancedMarketTrendsWidget(
-            analyticsData: _analyticsData,
-            height: 400,
-          ),
-
-        const SizedBox(height: 16),
-
-        // Time Period Selector with better styling
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-          decoration: BoxDecoration(
-            color: Colors.grey[100],
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: Colors.grey[300]!),
-          ),
-          child: Row(
-            children: [
-              const Icon(Icons.calendar_today, size: 20, color: Colors.grey),
-              const SizedBox(width: 8),
-              const Text(
-                'Time Period:',
-                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: DropdownButton<String>(
-                  value: _selectedTimePeriod,
-                  isExpanded: true,
-                  underline: const SizedBox(),
-                  items: _timePeriods.map((period) {
-                    return DropdownMenuItem(
-                      value: period,
-                      child: Text(period),
-                    );
-                  }).toList(),
-                  onChanged: (value) {
-                    setState(() {
-                      _selectedTimePeriod = value!;
-                    });
-                    _loadAnalyticsData();
-                  },
-                ),
-              ),
-            ],
-          ),
-        ),
-
-        const SizedBox(height: 16),
-
-        if (_isLoading)
-          const Padding(
-            padding: EdgeInsets.all(32),
-            child: Center(child: CircularProgressIndicator()),
-          )
-        else if (_analyticsData.isEmpty)
-          Padding(
-            padding: const EdgeInsets.all(32),
-            child: Center(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(Icons.trending_flat, size: 64, color: Colors.grey[400]),
-                  const SizedBox(height: 16),
-                  Text(
-                    'No market data available',
-                    style: TextStyle(color: Colors.grey[600], fontSize: 16),
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    'Try selecting a different time period',
-                    style: TextStyle(color: Colors.grey[500], fontSize: 12),
-                  ),
-                ],
-              ),
-            ),
-          )
-        else
-          _buildMarketOverview(),
-        ],
-      ),
+    return AllStationsAnalyticsWidget(
+      selectedTimePeriod: _selectedTimePeriod,
+      selectedFuelType: _selectedFuelType,
+      // Pass header and chip selector as optional parameters if the widget supports it,
+      // otherwise we'll need to modify AllStationsAnalyticsWidget to accept custom headers
     );
   }
 
-
-
-  Widget _buildTimePeriodSelector() {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-      decoration: BoxDecoration(
-        color: Colors.grey[100],
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.grey[300]!),
-      ),
-      child: Row(
-        children: [
-          const Icon(Icons.calendar_today, size: 20, color: Colors.grey),
-          const SizedBox(width: 8),
-          const Text(
-            'Time Period:',
-            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12),
-          ),
-          const SizedBox(width: 8),
-          Expanded(
-            child: DropdownButton<String>(
-              value: _selectedTimePeriod,
-              isExpanded: true,
-              underline: const SizedBox(),
-              items: _timePeriods.map((period) {
-                return DropdownMenuItem(
-                  value: period,
-                  child: Text(period),
-                );
-              }).toList(),
-              onChanged: (value) {
-                setState(() {
-                  _selectedTimePeriod = value!;
-                });
-                _loadAnalyticsData();
-              },
+  Widget _buildChipTimePeriodSelector() {
+    final theme = Theme.of(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Icon(Icons.access_time, size: 20, color: theme.primaryColor),
+            const SizedBox(width: 8),
+            const Text(
+              'Time Period',
+              style: TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.bold,
+              ),
             ),
-          ),
-        ],
-      ),
+          ],
+        ),
+        const SizedBox(height: 12),
+        Row(
+          children: _timePeriods.map((period) {
+            final isSelected = _selectedTimePeriod == period;
+            return Padding(
+              padding: const EdgeInsets.only(right: 12),
+              child: FilterChip(
+                label: Text(period),
+                selected: isSelected,
+                onSelected: (selected) {
+                  setState(() {
+                    _selectedTimePeriod = period;
+                  });
+                  _loadAnalyticsData();
+                },
+                backgroundColor: Colors.grey[100],
+                selectedColor: theme.primaryColor.withOpacity(0.2),
+                checkmarkColor: theme.primaryColor,
+                labelStyle: TextStyle(
+                  color: isSelected ? theme.primaryColor : Colors.grey[700],
+                  fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                ),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(20),
+                  side: BorderSide(
+                    color: isSelected ? theme.primaryColor : Colors.grey[300]!,
+                    width: isSelected ? 2 : 1,
+                  ),
+                ),
+                elevation: isSelected ? 2 : 0,
+              ),
+            );
+          }).toList(),
+        ),
+      ],
     );
   }
 
@@ -1071,9 +870,10 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
   Widget _buildMarketOverview() {
     if (_analyticsData.isEmpty) return const SizedBox();
 
-    final avgPrice = _analyticsData.fold<double>(0.0, 
-      (sum, data) => sum + data.currentPrice) / _analyticsData.length;
-    
+    final avgPrice = _analyticsData.fold<double>(
+            0.0, (sum, data) => sum + data.currentPrice) /
+        _analyticsData.length;
+
     final increasing = _analyticsData.where((d) => d.isPriceIncreasing).length;
     final decreasing = _analyticsData.length - increasing;
 
@@ -1092,7 +892,8 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> {
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceAround,
               children: [
-                _buildMarketStat('Avg Price', '\$${avgPrice.toStringAsFixed(2)}'),
+                _buildMarketStat(
+                    'Avg Price', '\$${avgPrice.toStringAsFixed(2)}'),
                 _buildMarketStat('Stations', _analyticsData.length.toString()),
                 _buildMarketStat('↑ Trends', '$increasing'),
                 _buildMarketStat('↓ Trends', '$decreasing'),

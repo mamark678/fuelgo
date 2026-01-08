@@ -1,4 +1,5 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:latlong2/latlong.dart';
 
 import '../models/price_history.dart';
@@ -7,7 +8,8 @@ class FirestoreService {
   static final FirebaseFirestore _db = FirebaseFirestore.instance;
 
   // Collection references
-  static CollectionReference get gasStationsCollection => _db.collection('gas_stations');
+  static CollectionReference get gasStationsCollection =>
+      _db.collection('gas_stations');
   static CollectionReference get usersCollection => _db.collection('users');
   // Create or update gas station data
   static Future<void> createOrUpdateGasStation({
@@ -25,13 +27,15 @@ class FirestoreService {
       if (stationId.isEmpty || stationId.trim().isEmpty) {
         throw Exception('Station ID cannot be empty');
       }
-      
+
       // Validate stationId format (Firestore document IDs cannot contain certain characters)
-      if (stationId.contains('/') || stationId.contains('\\') || 
-          stationId.contains('..') || stationId.length > 1500) {
+      if (stationId.contains('/') ||
+          stationId.contains('\\') ||
+          stationId.contains('..') ||
+          stationId.length > 1500) {
         throw Exception('Invalid station ID format');
       }
-      
+
       if (name.isEmpty || name.trim().isEmpty) {
         throw Exception('Station name cannot be empty');
       }
@@ -44,23 +48,27 @@ class FirestoreService {
       if (address.isEmpty || address.trim().isEmpty) {
         throw Exception('Address cannot be empty');
       }
-      
+
       // Validate position coordinates
-      if (position.latitude.isNaN || position.latitude.isInfinite ||
-          position.longitude.isNaN || position.longitude.isInfinite) {
+      if (position.latitude.isNaN ||
+          position.latitude.isInfinite ||
+          position.longitude.isNaN ||
+          position.longitude.isInfinite) {
         throw Exception('Invalid position coordinates');
       }
-      
+
       // Validate GeoPoint bounds
-      if (position.latitude < -90 || position.latitude > 90 ||
-          position.longitude < -180 || position.longitude > 180) {
+      if (position.latitude < -90 ||
+          position.latitude > 90 ||
+          position.longitude < -180 ||
+          position.longitude > 180) {
         throw Exception('Position coordinates out of valid range');
       }
-      
+
       // Check if station already exists (resubmission case)
       final stationDoc = await gasStationsCollection.doc(stationId).get();
       final bool isExistingStation = stationDoc.exists;
-      
+
       // Get owner's approval status to store in station document
       // Only try to fetch if we have permission (this is called by owners when creating stations)
       String ownerApprovalStatus = 'pending';
@@ -68,59 +76,69 @@ class FirestoreService {
         final userDoc = await usersCollection.doc(ownerId).get();
         if (userDoc.exists) {
           final userData = userDoc.data() as Map<String, dynamic>?;
-          ownerApprovalStatus = userData?['approvalStatus'] as String? ?? 'pending';
+          ownerApprovalStatus =
+              userData?['approvalStatus'] as String? ?? 'pending';
         }
       } catch (e) {
         // Silently handle permission errors - this is expected when non-owners try to access owner data
         // Default to pending if we can't fetch (permission denied is OK here)
-        if (e.toString().contains('PERMISSION_DENIED') || e.toString().contains('permission-denied')) {
+        if (e.toString().contains('PERMISSION_DENIED') ||
+            e.toString().contains('permission-denied')) {
           // This is expected - non-owners shouldn't be able to read owner approval status
           // The ownerApprovalStatus field should already be set in the station document
-          print('Note: Cannot access owner approval status (permission denied - this is expected for non-owners)');
+          print(
+              'Note: Cannot access owner approval status (permission denied - this is expected for non-owners)');
         } else {
           print('Warning: Could not fetch owner approval status: $e');
         }
         // Default to pending if we can't fetch
       }
-      
+
       // Prepare update data with validation
       // Convert LatLng to GeoPoint for Firestore (required for geolocation queries)
       final GeoPoint geoPoint = GeoPoint(position.latitude, position.longitude);
-      
+
       // Debug: Log the position being stored
-      print('[DEBUG] Storing position as geoPoint: lat=${position.latitude}, lng=${position.longitude}');
-      
+      print(
+          '[DEBUG] Storing position as geoPoint: lat=${position.latitude}, lng=${position.longitude}');
+
       // Clean prices map - ensure all values are valid doubles and keys are valid
       // Allow empty prices - stations can be created without prices (owner will set them later)
       final Map<String, double> cleanPrices = _normalizePrices(prices);
-      
+
       // Allow empty prices - stations can be created without prices
       // Owner will set prices later through the manage prices screen
-      
+
       // Ensure stationName is not null or empty
-      final finalStationName = (stationName?.isNotEmpty == true) ? stationName! : name;
-      
+      final finalStationName =
+          (stationName?.isNotEmpty == true) ? stationName! : name;
+
       // Ensure ownerApprovalStatus is valid
-      final validApprovalStatus = ['pending', 'approved', 'rejected'].contains(ownerApprovalStatus) 
-          ? ownerApprovalStatus 
-          : 'pending';
-      
+      final validApprovalStatus =
+          ['pending', 'approved', 'rejected'].contains(ownerApprovalStatus)
+              ? ownerApprovalStatus
+              : 'pending';
+
       // Build update data with all values validated and trimmed
       final Map<String, dynamic> updateData = {
         'name': name.trim(),
         'brand': brand.trim(),
         'geoPoint': geoPoint, // Use GeoPoint for geolocation queries
-        'position': {'latitude': position.latitude, 'longitude': position.longitude}, // Also store as Map for compatibility
+        'position': {
+          'latitude': position.latitude,
+          'longitude': position.longitude
+        }, // Also store as Map for compatibility
         'address': address.trim(),
         'prices': cleanPrices,
         'ownerId': ownerId.trim(),
         'stationName': finalStationName.trim(),
         'isOpen': true,
         'isOwnerCreated': true, // Mark as owner-created
-        'ownerApprovalStatus': validApprovalStatus, // Store owner's approval status
+        'ownerApprovalStatus':
+            validApprovalStatus, // Store owner's approval status
         'lastUpdated': FieldValue.serverTimestamp(),
       };
-      
+
       // Only initialize empty arrays for NEW stations (not resubmissions)
       // This preserves existing amenities, offers, and vouchers during resubmission
       if (!isExistingStation) {
@@ -133,25 +151,28 @@ class FirestoreService {
       }
       // For existing stations (resubmissions), we don't reset amenities/offers/vouchers
       // They will be preserved from the existing document
-      
+
       // Debug: Print the data being sent (without sensitive info)
       print('[DEBUG] Creating/updating gas station:');
       print('[DEBUG]   stationId: $stationId');
       print('[DEBUG]   name: $name');
       print('[DEBUG]   brand: $brand');
-      print('[DEBUG]   position: (${position.latitude}, ${position.longitude})');
+      print(
+          '[DEBUG]   position: (${position.latitude}, ${position.longitude})');
       print('[DEBUG]   ownerId: $ownerId');
       print('[DEBUG]   prices: $cleanPrices');
       print('[DEBUG]   updateData keys: ${updateData.keys.toList()}');
       print('[DEBUG]   isExistingStation: $isExistingStation');
-      
+
       // Try to set the document
       try {
         // Use set without merge for new documents, merge for updates
         if (isExistingStation) {
           // For existing documents, use merge to preserve existing fields
           print('[DEBUG] Updating existing document with merge');
-          await gasStationsCollection.doc(stationId).set(updateData, SetOptions(merge: true));
+          await gasStationsCollection
+              .doc(stationId)
+              .set(updateData, SetOptions(merge: true));
         } else {
           // For new documents, set directly (no merge needed)
           print('[DEBUG] Creating new document');
@@ -163,19 +184,19 @@ class FirestoreService {
         print('[ERROR] Firestore operation failed');
         print('[ERROR] Error: $firestoreError');
         print('[ERROR] Error type: ${firestoreError.runtimeType}');
-        
+
         // Print each field being set to help identify the problematic one
         print('[ERROR] Fields being set:');
         updateData.forEach((key, value) {
           print('[ERROR]   $key: ${value.runtimeType} = $value');
         });
-        
+
         if (firestoreError is FirebaseException) {
           print('[ERROR] Firebase error code: ${firestoreError.code}');
           print('[ERROR] Firebase error message: ${firestoreError.message}');
           print('[ERROR] Firebase error plugin: ${firestoreError.plugin}');
         }
-        
+
         rethrow;
       }
     } catch (e) {
@@ -193,12 +214,14 @@ class FirestoreService {
   // Offers management methods
 
   // Get all offers for all stations owned by a user
-  static Future<List<Map<String, dynamic>>> getOffersByOwner(String ownerId) async {
+  static Future<List<Map<String, dynamic>>> getOffersByOwner(
+      String ownerId) async {
     try {
       final stations = await getGasStationsByOwner(ownerId);
       final List<Map<String, dynamic>> offers = [];
       for (final station in stations) {
-        final stationOffers = List<Map<String, dynamic>>.from(station['offers'] ?? []);
+        final stationOffers =
+            List<Map<String, dynamic>>.from(station['offers'] ?? []);
         for (final offer in stationOffers) {
           final offerWithStation = Map<String, dynamic>.from(offer);
           offerWithStation['stationId'] = station['id'];
@@ -221,7 +244,7 @@ class FirestoreService {
       if (stationId.isEmpty) {
         throw Exception('Station ID cannot be empty when adding an offer');
       }
-      
+
       await gasStationsCollection.doc(stationId).update({
         'offers': FieldValue.arrayUnion([offer]),
         'lastUpdated': FieldValue.serverTimestamp(),
@@ -242,7 +265,7 @@ class FirestoreService {
       if (stationId.isEmpty) {
         throw Exception('Station ID cannot be empty when updating an offer');
       }
-      
+
       final docRef = gasStationsCollection.doc(stationId);
       final doc = await docRef.get();
       if (!doc.exists) throw Exception('Gas station not found');
@@ -274,7 +297,7 @@ class FirestoreService {
       if (stationId.isEmpty) {
         throw Exception('Station ID cannot be empty when deleting an offer');
       }
-      
+
       await gasStationsCollection.doc(stationId).update({
         'offers': FieldValue.arrayRemove([offer]),
         'lastUpdated': FieldValue.serverTimestamp(),
@@ -298,7 +321,17 @@ class FirestoreService {
       if (stationId.isEmpty) {
         throw Exception('Station ID cannot be empty when claiming an offer');
       }
-      
+      // Ensure the caller is authenticated and use the authenticated UID
+      final firebaseUser = FirebaseAuth.instance.currentUser;
+      if (firebaseUser == null) {
+        throw Exception('User must be authenticated to claim an offer');
+      }
+      final String effectiveUserId = firebaseUser.uid;
+      if (effectiveUserId != userId) {
+        print(
+            '[WARNING] claimOffer: passed userId ($userId) does not match authenticated uid (${firebaseUser.uid}). Using authenticated uid.');
+      }
+
       final docRef = gasStationsCollection.doc(stationId);
       final doc = await docRef.get();
       if (!doc.exists) throw Exception('Gas station not found');
@@ -310,13 +343,13 @@ class FirestoreService {
       if (offerIndex == -1) throw Exception('Offer not found');
 
       final offer = offers[offerIndex];
-      
+
       // Check if offer is active
       final status = offer['status'] ?? 'Active';
       if (status != 'Active') {
         throw Exception('Offer is not active');
       }
-      
+
       // Check expiry date
       if (offer['validUntil'] != null) {
         DateTime validUntil;
@@ -329,7 +362,7 @@ class FirestoreService {
           throw Exception('Offer has expired');
         }
       }
-      
+
       final currentUsed = ((offer['used'] ?? 0) as num).toInt();
       final maxUses = ((offer['maxUses'] ?? 0) as num).toInt();
 
@@ -340,11 +373,11 @@ class FirestoreService {
 
       // Check if user has already claimed this offer
       final userClaimedQuery = await usersCollection
-          .doc(userId)
+          .doc(effectiveUserId)
           .collection('claimed_offers')
           .where('offerId', isEqualTo: offerId)
           .get();
-      
+
       if (userClaimedQuery.docs.isNotEmpty) {
         throw Exception('You have already claimed this offer');
       }
@@ -356,30 +389,54 @@ class FirestoreService {
       };
 
       // Record the claim in user's collection
-      await usersCollection.doc(userId).collection('claimed_offers').add({
+      await usersCollection
+          .doc(effectiveUserId)
+          .collection('claimed_offers')
+          .add({
         'offerId': offerId,
         'stationId': stationId,
         'stationName': data['name'] ?? '',
         'offerTitle': offer['title'] ?? '',
-        'userId': userId,
+        'userId': effectiveUserId,
         'userName': userName,
-        'claimedAt': FieldValue.serverTimestamp(),
+        // Use Timestamp.now() (client timestamp) so security rules that
+        // validate the field as a timestamp accept the write. Server
+        // timestamps (FieldValue.serverTimestamp()) can be treated as a
+        // sentinel in the incoming request and fail strict type checks.
+        'claimedAt': Timestamp.now(),
         'status': 'claimed',
       });
 
-      // Update the station's offers
-      await docRef.update({
-        'offers': offers,
-        'lastUpdated': FieldValue.serverTimestamp(),
-      });
-
+      // Try to update the station's offers usage count. This may be
+      // blocked by Firestore security rules for regular users (only
+      // owners/admins can modify the `offers` array). If the update is
+      // denied, log a warning but treat the user claim as successful
+      // because we have already recorded it in the user's collection.
+      try {
+        await docRef.update({
+          'offers': offers,
+          'lastUpdated': FieldValue.serverTimestamp(),
+        });
+      } catch (e) {
+        // If it's a permission error, don't fail the entire claim flow.
+        final errStr = e.toString();
+        if (errStr.contains('PERMISSION_DENIED') ||
+            errStr.contains('permission-denied')) {
+          print(
+              '[WARN] claimOffer: insufficient permissions to update station offers for $stationId. Claim recorded for user $effectiveUserId.');
+        } else {
+          // Re-throw unexpected errors
+          rethrow;
+        }
+      }
     } catch (e) {
       throw Exception('Failed to claim offer: $e');
     }
   }
 
   // Get user's claimed offers
-  static Future<List<Map<String, dynamic>>> getUserClaimedOffers(String userId) async {
+  static Future<List<Map<String, dynamic>>> getUserClaimedOffers(
+      String userId) async {
     try {
       final querySnapshot = await usersCollection
           .doc(userId)
@@ -398,7 +455,8 @@ class FirestoreService {
   }
 
   // Get user's redeemed vouchers
-  static Future<List<Map<String, dynamic>>> getUserRedeemedVouchers(String userId) async {
+  static Future<List<Map<String, dynamic>>> getUserRedeemedVouchers(
+      String userId) async {
     try {
       final querySnapshot = await usersCollection
           .doc(userId)
@@ -428,8 +486,9 @@ class FirestoreService {
       final List<Map<String, dynamic>> matchingVouchers = [];
 
       for (final station in allStations) {
-        final stationVouchers = List<Map<String, dynamic>>.from(station['vouchers'] ?? []);
-        
+        final stationVouchers =
+            List<Map<String, dynamic>>.from(station['vouchers'] ?? []);
+
         for (final voucher in stationVouchers) {
           // Apply filters
           bool matches = true;
@@ -445,12 +504,14 @@ class FirestoreService {
           // Voucher type filter
           if (voucherType != null && voucherType != 'All') {
             final discountType = voucher['discountType'] ?? '';
-            
+
             if (voucherType == 'Percentage' && discountType != 'percentage') {
               matches = false;
-            } else if (voucherType == 'Fixed Amount' && discountType != 'fixed_amount') {
+            } else if (voucherType == 'Fixed Amount' &&
+                discountType != 'fixed_amount') {
               matches = false;
-            } else if (voucherType == 'Free Item' && discountType != 'free_item') {
+            } else if (voucherType == 'Free Item' &&
+                discountType != 'free_item') {
               matches = false;
             }
           }
@@ -458,9 +519,11 @@ class FirestoreService {
           // Search query filter
           if (query != null && query.isNotEmpty) {
             final title = (voucher['title'] ?? '').toString().toLowerCase();
-            final description = (voucher['description'] ?? '').toString().toLowerCase();
-            final stationName = (station['name'] ?? '').toString().toLowerCase();
-            
+            final description =
+                (voucher['description'] ?? '').toString().toLowerCase();
+            final stationName =
+                (station['name'] ?? '').toString().toLowerCase();
+
             if (!title.contains(query.toLowerCase()) &&
                 !description.contains(query.toLowerCase()) &&
                 !stationName.contains(query.toLowerCase())) {
@@ -478,7 +541,7 @@ class FirestoreService {
 
           if (matchingVouchers.length >= limit) break;
         }
-        
+
         if (matchingVouchers.length >= limit) break;
       }
 
@@ -500,8 +563,9 @@ class FirestoreService {
       final List<Map<String, dynamic>> matchingOffers = [];
 
       for (final station in allStations) {
-        final stationOffers = List<Map<String, dynamic>>.from(station['offers'] ?? []);
-        
+        final stationOffers =
+            List<Map<String, dynamic>>.from(station['offers'] ?? []);
+
         for (final offer in stationOffers) {
           // Apply filters
           bool matches = true;
@@ -518,7 +582,7 @@ class FirestoreService {
           if (offerType != null && offerType != 'All') {
             final hasDiscount = offer['discount'] != null;
             final hasCashback = offer['cashback'] != null;
-            
+
             if (offerType == 'Discount' && !hasDiscount) {
               matches = false;
             } else if (offerType == 'Cashback' && !hasCashback) {
@@ -531,9 +595,11 @@ class FirestoreService {
           // Search query filter
           if (query != null && query.isNotEmpty) {
             final title = (offer['title'] ?? '').toString().toLowerCase();
-            final description = (offer['description'] ?? '').toString().toLowerCase();
-            final stationName = (station['name'] ?? '').toString().toLowerCase();
-            
+            final description =
+                (offer['description'] ?? '').toString().toLowerCase();
+            final stationName =
+                (station['name'] ?? '').toString().toLowerCase();
+
             if (!title.contains(query.toLowerCase()) &&
                 !description.contains(query.toLowerCase()) &&
                 !stationName.contains(query.toLowerCase())) {
@@ -551,7 +617,7 @@ class FirestoreService {
 
           if (matchingOffers.length >= limit) break;
         }
-        
+
         if (matchingOffers.length >= limit) break;
       }
 
@@ -564,12 +630,14 @@ class FirestoreService {
   // Voucher management methods
 
   // Get all vouchers for all stations owned by a user
-  static Future<List<Map<String, dynamic>>> getVouchersByOwner(String ownerId) async {
+  static Future<List<Map<String, dynamic>>> getVouchersByOwner(
+      String ownerId) async {
     try {
       final stations = await getGasStationsByOwner(ownerId);
       final List<Map<String, dynamic>> vouchers = [];
       for (final station in stations) {
-        final stationVouchers = List<Map<String, dynamic>>.from(station['vouchers'] ?? []);
+        final stationVouchers =
+            List<Map<String, dynamic>>.from(station['vouchers'] ?? []);
         for (final voucher in stationVouchers) {
           final voucherWithStation = Map<String, dynamic>.from(voucher);
           voucherWithStation['stationId'] = station['id'];
@@ -591,7 +659,7 @@ class FirestoreService {
       if (stationId.isEmpty) {
         throw Exception('Station ID cannot be empty when adding a voucher');
       }
-      
+
       await gasStationsCollection.doc(stationId).update({
         'vouchers': FieldValue.arrayUnion([voucher]),
         'lastUpdated': FieldValue.serverTimestamp(),
@@ -611,7 +679,7 @@ class FirestoreService {
       if (stationId.isEmpty) {
         throw Exception('Station ID cannot be empty when updating a voucher');
       }
-      
+
       final docRef = gasStationsCollection.doc(stationId);
       final doc = await docRef.get();
       if (!doc.exists) throw Exception('Gas station not found');
@@ -642,7 +710,7 @@ class FirestoreService {
       if (stationId.isEmpty) {
         throw Exception('Station ID cannot be empty when deleting a voucher');
       }
-      
+
       await gasStationsCollection.doc(stationId).update({
         'vouchers': FieldValue.arrayRemove([voucher]),
         'lastUpdated': FieldValue.serverTimestamp(),
@@ -651,84 +719,268 @@ class FirestoreService {
       throw Exception('Failed to delete voucher: $e');
     }
   }
+// Replace the redeemVoucher method in firestore_service.dart with this fixed version:
 
-  // Redeem a voucher for a user (vouchers are stored in gas_stations collection)
- // Redeem a voucher for a user (store redemption as station subdoc + user history)
-static Future<void> redeemVoucher({
-  required String voucherId,
-  required String stationId,
-  required String userId,
-  required String userName,
-}) async {
-  if (stationId.isEmpty) throw Exception('Station ID cannot be empty when redeeming a voucher');
+// Replace the redeemVoucher method in firestore_service.dart with this fixed version:
 
-  final stationRef = gasStationsCollection.doc(stationId);
-  final stationRedemptionRef = stationRef.collection('vouchers_redemptions').doc(userId);
-  final userRedeemedRef = usersCollection.doc(userId).collection('redeemed_vouchers').doc();
+  static Future<void> redeemVoucher({
+    required String voucherId,
+    required String stationId,
+    required String userId,
+    required String userName,
+  }) async {
+    print('[REDEEM_VOUCHER] ========== Starting redeemVoucher ==========');
+    print('[REDEEM_VOUCHER] voucherId: $voucherId');
+    print('[REDEEM_VOUCHER] stationId: $stationId');
+    print('[REDEEM_VOUCHER] userId: $userId');
+    print('[REDEEM_VOUCHER] userName: $userName');
 
-  try {
-    await _db.runTransaction((tx) async {
-      final stationSnap = await tx.get(stationRef);
-      if (!stationSnap.exists) throw Exception('Gas station not found');
+    if (stationId.isEmpty) {
+      print('[REDEEM_VOUCHER] ERROR: Station ID is empty!');
+      throw Exception('Station ID cannot be empty when redeeming a voucher');
+    }
 
-      final stationData = stationSnap.data() as Map<String, dynamic>;
-      final vouchers = List<Map<String, dynamic>>.from(stationData['vouchers'] ?? []);
-      final voucherIndex = vouchers.indexWhere((v) => v['id'] == voucherId);
-      if (voucherIndex == -1) throw Exception('Voucher not found');
+    if (voucherId.isEmpty) {
+      print('[REDEEM_VOUCHER] ERROR: Voucher ID is empty!');
+      throw Exception('Voucher ID cannot be empty');
+    }
 
-      final voucher = vouchers[voucherIndex];
+    final stationRef = gasStationsCollection.doc(stationId);
+    // Use a combination of userId and voucherId to prevent duplicates while allowing multiple voucher redemptions
+    final redemptionDocId = '${userId}_$voucherId';
+    final stationRedemptionRef =
+        stationRef.collection('vouchers_redemptions').doc(redemptionDocId);
+    final userRedeemedRef =
+        usersCollection.doc(userId).collection('redeemed_vouchers').doc();
 
-      // Expiry check
-      if (voucher['validUntil'] != null) {
-        DateTime validUntil;
-        if (voucher['validUntil'] is Timestamp) {
-          validUntil = (voucher['validUntil'] as Timestamp).toDate();
-        } else {
-          validUntil = DateTime.parse(voucher['validUntil'].toString());
+    print('[REDEEM_VOUCHER] Redemption document ID: $redemptionDocId');
+    print('[REDEEM_VOUCHER] Station ref path: ${stationRef.path}');
+    print(
+        '[REDEEM_VOUCHER] Station redemption ref path: ${stationRedemptionRef.path}');
+    print('[REDEEM_VOUCHER] User redeemed ref path: ${userRedeemedRef.path}');
+
+    try {
+      print('[REDEEM_VOUCHER] Starting transaction...');
+
+      await _db.runTransaction((tx) async {
+        print('[REDEEM_VOUCHER] [TRANSACTION] Getting station document...');
+
+        final stationSnap = await tx.get(stationRef);
+        print(
+            '[REDEEM_VOUCHER] [TRANSACTION] Station exists: ${stationSnap.exists}');
+
+        if (!stationSnap.exists) {
+          print(
+              '[REDEEM_VOUCHER] [TRANSACTION] ERROR: Gas station not found at path: ${stationRef.path}');
+          throw Exception('Gas station not found');
         }
-        if (validUntil.isBefore(DateTime.now())) throw Exception('Voucher expired');
+
+        final stationData = stationSnap.data() as Map<String, dynamic>;
+        print(
+            '[REDEEM_VOUCHER] [TRANSACTION] Station data keys: ${stationData.keys.toList()}');
+
+        final vouchers =
+            List<Map<String, dynamic>>.from(stationData['vouchers'] ?? []);
+        print(
+            '[REDEEM_VOUCHER] [TRANSACTION] Total vouchers in station: ${vouchers.length}');
+
+        final voucherIndex = vouchers.indexWhere((v) => v['id'] == voucherId);
+        print(
+            '[REDEEM_VOUCHER] [TRANSACTION] Voucher index found: $voucherIndex');
+
+        if (voucherIndex == -1) {
+          print(
+              '[REDEEM_VOUCHER] [TRANSACTION] ERROR: Voucher with id $voucherId not found');
+          print(
+              '[REDEEM_VOUCHER] [TRANSACTION] Available voucher ids: ${vouchers.map((v) => v['id']).toList()}');
+          throw Exception('Voucher not found');
+        }
+
+        final voucher = vouchers[voucherIndex];
+        print(
+            '[REDEEM_VOUCHER] [TRANSACTION] Found voucher: ${voucher['title']}');
+
+        // Check if user already redeemed this voucher (new format)
+        print(
+            '[REDEEM_VOUCHER] [TRANSACTION] Checking existing redemption at: ${stationRedemptionRef.path}');
+
+        final existingStationRedemption = await tx.get(stationRedemptionRef);
+        print(
+            '[REDEEM_VOUCHER] [TRANSACTION] Existing station redemption exists: ${existingStationRedemption.exists}');
+
+        if (existingStationRedemption.exists) {
+          print(
+              '[REDEEM_VOUCHER] [TRANSACTION] ERROR: User already redeemed this voucher');
+          throw Exception('You have already redeemed this voucher');
+        }
+
+        // Also check old format (userId only) and migrate if found
+        final oldFormatRef =
+            stationRef.collection('vouchers_redemptions').doc(userId);
+        final existingOldFormat = await tx.get(oldFormatRef);
+
+        if (existingOldFormat.exists) {
+          final oldData = existingOldFormat.data() as Map<String, dynamic>?;
+          final oldVoucherId = oldData?['voucherId'];
+
+          print(
+              '[REDEEM_VOUCHER] [TRANSACTION] Found old format redemption document');
+          print(
+              '[REDEEM_VOUCHER] [TRANSACTION] Old voucher ID: $oldVoucherId, Current voucher ID: $voucherId');
+
+          // If it's the same voucher, it's already redeemed
+          if (oldVoucherId == voucherId) {
+            print(
+                '[REDEEM_VOUCHER] [TRANSACTION] ERROR: User already redeemed this voucher (old format)');
+            throw Exception('You have already redeemed this voucher');
+          }
+
+          // If it's a different voucher, delete the old format and continue
+          print(
+              '[REDEEM_VOUCHER] [TRANSACTION] Migrating from old format to new format');
+          tx.delete(oldFormatRef);
+        }
+
+        // Expiry check
+        if (voucher['validUntil'] != null) {
+          DateTime validUntil;
+          if (voucher['validUntil'] is Timestamp) {
+            validUntil = (voucher['validUntil'] as Timestamp).toDate();
+          } else {
+            validUntil = DateTime.parse(voucher['validUntil'].toString());
+          }
+          print(
+              '[REDEEM_VOUCHER] [TRANSACTION] Voucher expiry date: $validUntil');
+          if (validUntil.isBefore(DateTime.now())) {
+            print('[REDEEM_VOUCHER] [TRANSACTION] ERROR: Voucher expired');
+            throw Exception('Voucher expired');
+          }
+        }
+
+        // Status check
+        final status = voucher['status'] ?? 'Active';
+        if (status != 'Active') {
+          print(
+              '[REDEEM_VOUCHER] [TRANSACTION] ERROR: Voucher is not active (status: $status)');
+          throw Exception('Voucher is not active');
+        }
+
+        // Quantity / max uses check
+        final int? quantity = (voucher['quantity'] is num)
+            ? (voucher['quantity'] as num).toInt()
+            : null;
+        final int? used =
+            (voucher['used'] is num) ? (voucher['used'] as num).toInt() : 0;
+        final int? maxUses = (voucher['maxUses'] is num)
+            ? (voucher['maxUses'] as num).toInt()
+            : null;
+
+        print(
+            '[REDEEM_VOUCHER] [TRANSACTION] Quantity: $quantity, Used: $used, MaxUses: $maxUses');
+
+        if (quantity != null && quantity <= 0) {
+          print(
+              '[REDEEM_VOUCHER] [TRANSACTION] ERROR: Voucher out of stock (quantity: $quantity)');
+          throw Exception('Voucher out of stock');
+        }
+        if (maxUses != null && used != null && used >= maxUses) {
+          print(
+              '[REDEEM_VOUCHER] [TRANSACTION] ERROR: Voucher reached max uses (used: $used, maxUses: $maxUses)');
+          throw Exception('Voucher has reached maximum redemptions');
+        }
+
+        // Use Timestamp.now() instead of FieldValue.serverTimestamp() in transactions
+        final now = Timestamp.now();
+        print('[REDEEM_VOUCHER] [TRANSACTION] Using timestamp: $now');
+
+        // Create redemption doc under station subcollection (id = voucherId for uniqueness per user per voucher)
+        print(
+            '[REDEEM_VOUCHER] [TRANSACTION] Setting station redemption document...');
+
+        try {
+          tx.set(stationRedemptionRef, {
+            'voucherId': voucherId,
+            'stationId': stationId,
+            'userId': userId,
+            'userName': userName,
+            'voucherCode': voucher['code'] ?? '',
+            'voucherTitle': voucher['title'] ?? '',
+            'claimedAt': now,
+          });
+          print(
+              '[REDEEM_VOUCHER] [TRANSACTION] Station redemption document set successfully');
+        } catch (e) {
+          print(
+              '[REDEEM_VOUCHER] [TRANSACTION] ERROR setting station redemption: $e');
+          rethrow;
+        }
+
+        // Add to user's redeemed_vouchers (history)
+        print(
+            '[REDEEM_VOUCHER] [TRANSACTION] Setting user redeemed voucher document...');
+
+        try {
+          tx.set(userRedeemedRef, {
+            'voucherId': voucherId,
+            'stationId': stationId,
+            'stationName': stationData['name'] ?? '',
+            'voucherTitle': voucher['title'] ?? '',
+            'voucherCode': voucher['code'] ?? '',
+            'userId': userId,
+            'userName': userName,
+            'redeemedAt': now,
+            'status': 'redeemed',
+          });
+          print(
+              '[REDEEM_VOUCHER] [TRANSACTION] User redeemed voucher document set successfully');
+        } catch (e) {
+          print(
+              '[REDEEM_VOUCHER] [TRANSACTION] ERROR setting user redeemed voucher: $e');
+          rethrow;
+        }
+
+        // Update voucher usage count
+        vouchers[voucherIndex]['used'] = (used ?? 0) + 1;
+
+        // Update station document with new vouchers array
+        try {
+          tx.update(stationRef, {
+            'vouchers': vouchers,
+            'lastUpdated': now,
+          });
+          print(
+              '[REDEEM_VOUCHER] [TRANSACTION] Updated station voucher usage count');
+        } catch (e) {
+          print(
+              '[REDEEM_VOUCHER] [TRANSACTION] ERROR updating station vouchers: $e');
+          rethrow;
+        }
+
+        print(
+            '[REDEEM_VOUCHER] [TRANSACTION] Transaction completed successfully');
+      });
+
+      print(
+          '[REDEEM_VOUCHER] ========== redeemVoucher completed successfully ==========');
+    } catch (e) {
+      print('[REDEEM_VOUCHER] ========== ERROR in redeemVoucher ==========');
+      print('[REDEEM_VOUCHER] Error type: ${e.runtimeType}');
+      print('[REDEEM_VOUCHER] Error message: $e');
+
+      if (e.toString().contains('PERMISSION_DENIED')) {
+        print('[REDEEM_VOUCHER] PERMISSION ERROR DETECTED');
+        print('[REDEEM_VOUCHER] Check the following Firestore rules:');
+        print(
+            '[REDEEM_VOUCHER] 1. gas_stations/{stationId}/vouchers_redemptions/{voucherId} - create/write');
+        print(
+            '[REDEEM_VOUCHER] 2. users/{userId}/redeemed_vouchers/{redeemedId} - create/write');
+        print(
+            '[REDEEM_VOUCHER] 3. Ensure authenticated user UID matches userId parameter');
       }
 
-      // Quantity / max uses check
-      final int? quantity = (voucher['quantity'] is num) ? (voucher['quantity'] as num).toInt() : null;
-      final int? used = (voucher['used'] is num) ? (voucher['used'] as num).toInt() : null;
-      final int? maxUses = (voucher['maxUses'] is num) ? (voucher['maxUses'] as num).toInt() : null;
-      if (quantity != null && quantity <= 0) throw Exception('Voucher out of stock');
-      if (maxUses != null && used != null && used >= maxUses) throw Exception('Voucher has reached maximum redemptions');
-
-      // Ensure user hasn't already redeemed this voucher (under station)
-      final existingStationRedemption = await tx.get(stationRedemptionRef);
-      if (existingStationRedemption.exists) throw Exception('You have already redeemed this voucher');
-
-      // Create redemption doc under station subcollection (id = userId)
-      tx.set(stationRedemptionRef, {
-        'voucherId': voucherId,
-        'stationId': stationId,
-        'userId': userId,
-        'userName': userName,
-        'voucherCode': voucher['code'] ?? '',
-        'claimedAt': FieldValue.serverTimestamp(),
-      });
-
-      // Add to user's redeemed_vouchers (history)
-      tx.set(userRedeemedRef, {
-        'voucherId': voucherId,
-        'stationId': stationId,
-        'voucherTitle': voucher['title'] ?? '',
-        'voucherCode': voucher['code'] ?? '',
-        'userId': userId,
-        'userName': userName,
-        'redeemedAt': FieldValue.serverTimestamp(),
-        'status': 'redeemed',
-      });
-
-      // Calculate and store price reduction based on voucher
-      await _calculateAndStorePriceReduction(tx, stationRef, voucher, stationData);
-    });
-  } catch (e) {
-    throw Exception('Failed to redeem voucher: $e');
+      throw Exception('Failed to redeem voucher: $e');
+    }
   }
-}
 
   // Helper method to calculate and store price reduction based on voucher redemption
   static Future<void> _calculateAndStorePriceReduction(
@@ -738,43 +990,49 @@ static Future<void> redeemVoucher({
     Map<String, dynamic> stationData,
   ) async {
     try {
-      final currentPrices = Map<String, double>.from(stationData['prices'] ?? {});
-      final applicableFuelTypes = List<String>.from(voucher['applicableFuelTypes'] ?? ['Regular', 'Premium', 'Diesel']);
+      final currentPrices =
+          Map<String, double>.from(stationData['prices'] ?? {});
+      final applicableFuelTypes = List<String>.from(
+          voucher['applicableFuelTypes'] ?? ['Regular', 'Premium', 'Diesel']);
       final discountType = voucher['discountType'] ?? 'percentage';
       final discountValue = (voucher['discountValue'] ?? 0.0).toDouble();
-      
+
       // Get existing price reductions or initialize empty map
-      final existingReductions = Map<String, double>.from(stationData['priceReductions'] ?? {});
+      final existingReductions =
+          Map<String, double>.from(stationData['priceReductions'] ?? {});
       final updatedReductions = Map<String, double>.from(existingReductions);
-      
+
       // Calculate price reduction for each applicable fuel type
       for (final fuelType in applicableFuelTypes) {
         final normalizedFuelType = fuelType.toLowerCase();
         final currentPrice = currentPrices[normalizedFuelType] ?? 0.0;
-        
+
         if (currentPrice > 0) {
           double reductionAmount = 0.0;
-          
+
           if (discountType == 'percentage' && discountValue > 0) {
             reductionAmount = currentPrice * (discountValue / 100);
           } else if (discountType == 'fixed_amount' && discountValue > 0) {
             reductionAmount = discountValue;
           }
-          
+
           // Add to existing reduction (cumulative)
-          final existingReduction = updatedReductions[normalizedFuelType] ?? 0.0;
-          updatedReductions[normalizedFuelType] = existingReduction + reductionAmount;
+          final existingReduction =
+              updatedReductions[normalizedFuelType] ?? 0.0;
+          updatedReductions[normalizedFuelType] =
+              existingReduction + reductionAmount;
         }
       }
-      
+
       // Update station document with price reductions
       tx.update(stationRef, {
         'priceReductions': updatedReductions,
         'lastUpdated': FieldValue.serverTimestamp(),
       });
-      
+
       // Record price reduction history for analytics
-      final reductionHistoryRef = stationRef.collection('price_reduction_history').doc();
+      final reductionHistoryRef =
+          stationRef.collection('price_reduction_history').doc();
       tx.set(reductionHistoryRef, {
         'voucherId': voucher['id'],
         'voucherTitle': voucher['title'],
@@ -784,7 +1042,6 @@ static Future<void> redeemVoucher({
         'reductionsApplied': updatedReductions,
         'timestamp': FieldValue.serverTimestamp(),
       });
-      
     } catch (e) {
       print('Error calculating price reduction: $e');
       // Don't throw error here to avoid breaking the main redemption flow
@@ -792,11 +1049,12 @@ static Future<void> redeemVoucher({
   }
 
   // Get price reductions for a specific station
-  static Future<Map<String, double>> getStationPriceReductions(String stationId) async {
+  static Future<Map<String, double>> getStationPriceReductions(
+      String stationId) async {
     try {
       final doc = await gasStationsCollection.doc(stationId).get();
       if (!doc.exists) return {};
-      
+
       final data = doc.data() as Map<String, dynamic>;
       return Map<String, double>.from(data['priceReductions'] ?? {});
     } catch (e) {
@@ -821,9 +1079,10 @@ static Future<void> redeemVoucher({
 
       // Check if user has already redeemed this voucher
       final stationRef = gasStationsCollection.doc(stationId);
-      final userRedemptionRef = stationRef.collection('vouchers_redemptions').doc(userId);
+      final userRedemptionRef =
+          stationRef.collection('vouchers_redemptions').doc(userId);
       final existingRedemption = await userRedemptionRef.get();
-      
+
       if (existingRedemption.exists) {
         throw Exception('You have already redeemed this voucher');
       }
@@ -901,19 +1160,23 @@ static Future<void> redeemVoucher({
     }
 
     // Check usage limits
-    final int? used = (voucher['used'] is num) ? (voucher['used'] as num).toInt() : null;
-    final int? maxUses = (voucher['maxUses'] is num) ? (voucher['maxUses'] as num).toInt() : null;
+    final int? used =
+        (voucher['used'] is num) ? (voucher['used'] as num).toInt() : null;
+    final int? maxUses = (voucher['maxUses'] is num)
+        ? (voucher['maxUses'] as num).toInt()
+        : null;
     if (maxUses != null && used != null && used >= maxUses) return false;
 
     return true;
   }
 
   // Update voucher usage count
-  static Future<void> _updateVoucherUsageCount(String stationId, String voucherId) async {
+  static Future<void> _updateVoucherUsageCount(
+      String stationId, String voucherId) async {
     try {
       final stationRef = gasStationsCollection.doc(stationId);
       final stationDoc = await stationRef.get();
-      
+
       if (!stationDoc.exists) return;
 
       final data = stationDoc.data() as Map<String, dynamic>;
@@ -955,11 +1218,12 @@ static Future<void> redeemVoucher({
           final status = offer['status'] ?? 'Active';
           final used = ((offer['used'] ?? 0) as num).toInt();
           final offerId = offer['id'] ?? '';
-          final createdAt = offer['createdAt'] != null 
+          final createdAt = offer['createdAt'] != null
               ? DateTime.parse(offer['createdAt'])
               : DateTime.now();
-          final dayKey = '${createdAt.year}-${createdAt.month.toString().padLeft(2, '0')}-${createdAt.day.toString().padLeft(2, '0')}';
-          
+          final dayKey =
+              '${createdAt.year}-${createdAt.month.toString().padLeft(2, '0')}-${createdAt.day.toString().padLeft(2, '0')}';
+
           if (status == 'Active') {
             activeOffers++;
           } else if (status == 'Paused') {
@@ -967,7 +1231,7 @@ static Future<void> redeemVoucher({
           } else if (status == 'Expired') {
             expiredOffers++;
           }
-          
+
           totalClaims += used;
           claimsByOffer[offerId] = used;
           claimsByDay[dayKey] = (claimsByDay[dayKey] ?? 0) + used;
@@ -976,7 +1240,8 @@ static Future<void> redeemVoucher({
 
       // Calculate today's claims
       final today = DateTime.now();
-      final todayKey = '${today.year}-${today.month.toString().padLeft(2, '0')}-${today.day.toString().padLeft(2, '0')}';
+      final todayKey =
+          '${today.year}-${today.month.toString().padLeft(2, '0')}-${today.day.toString().padLeft(2, '0')}';
       todayClaims = claimsByDay[todayKey] ?? 0;
 
       return {
@@ -999,7 +1264,8 @@ static Future<void> redeemVoucher({
   }
 
   // Get voucher analytics for a station owner
-  static Future<Map<String, dynamic>> getVoucherAnalytics(String ownerId) async {
+  static Future<Map<String, dynamic>> getVoucherAnalytics(
+      String ownerId) async {
     try {
       final stations = await getGasStationsByOwner(ownerId);
       int totalVouchers = 0;
@@ -1012,18 +1278,20 @@ static Future<void> redeemVoucher({
       final Map<String, int> redemptionsByDay = {};
 
       for (final station in stations) {
-        final vouchers = List<Map<String, dynamic>>.from(station['vouchers'] ?? []);
+        final vouchers =
+            List<Map<String, dynamic>>.from(station['vouchers'] ?? []);
         totalVouchers += vouchers.length;
 
         for (final voucher in vouchers) {
           final status = voucher['status'] ?? 'Active';
           final used = ((voucher['used'] ?? 0) as num).toInt();
           final voucherId = voucher['id'] ?? '';
-          final createdAt = voucher['createdAt'] != null 
+          final createdAt = voucher['createdAt'] != null
               ? DateTime.parse(voucher['createdAt'])
               : DateTime.now();
-          final dayKey = '${createdAt.year}-${createdAt.month.toString().padLeft(2, '0')}-${createdAt.day.toString().padLeft(2, '0')}';
-          
+          final dayKey =
+              '${createdAt.year}-${createdAt.month.toString().padLeft(2, '0')}-${createdAt.day.toString().padLeft(2, '0')}';
+
           if (status == 'Active') {
             activeVouchers++;
           } else if (status == 'Paused') {
@@ -1031,7 +1299,7 @@ static Future<void> redeemVoucher({
           } else if (status == 'Expired') {
             expiredVouchers++;
           }
-          
+
           totalRedemptions += used;
           redemptionsByVoucher[voucherId] = used;
           redemptionsByDay[dayKey] = (redemptionsByDay[dayKey] ?? 0) + used;
@@ -1040,7 +1308,8 @@ static Future<void> redeemVoucher({
 
       // Calculate today's redemptions
       final today = DateTime.now();
-      final todayKey = '${today.year}-${today.month.toString().padLeft(2, '0')}-${today.day.toString().padLeft(2, '0')}';
+      final todayKey =
+          '${today.year}-${today.month.toString().padLeft(2, '0')}-${today.day.toString().padLeft(2, '0')}';
       todayRedemptions = redemptionsByDay[todayKey] ?? 0;
 
       return {
@@ -1053,9 +1322,11 @@ static Future<void> redeemVoucher({
         'revenueImpact': totalRedemptions * 30.0,
         'redemptionsByVoucher': redemptionsByVoucher,
         'redemptionsByDay': redemptionsByDay,
-        'averageRedemptionRate': totalVouchers > 0 ? totalRedemptions / totalVouchers : 0.0,
+        'averageRedemptionRate':
+            totalVouchers > 0 ? totalRedemptions / totalVouchers : 0.0,
         'totalViews': totalRedemptions * 2, // Estimate views as 2x redemptions
-        'uniqueUsers': (totalRedemptions * 0.6).round(), // Estimate unique users
+        'uniqueUsers':
+            (totalRedemptions * 0.6).round(), // Estimate unique users
       };
     } catch (e) {
       throw Exception('Failed to get voucher analytics: $e');
@@ -1063,17 +1334,20 @@ static Future<void> redeemVoucher({
   }
 
   // Get combined analytics for offers and vouchers
-  static Future<Map<String, dynamic>> getCombinedAnalytics(String ownerId) async {
+  static Future<Map<String, dynamic>> getCombinedAnalytics(
+      String ownerId) async {
     try {
       final offerAnalytics = await getOfferAnalytics(ownerId);
       final voucherAnalytics = await getVoucherAnalytics(ownerId);
-      
-      final totalRevenueImpact = (offerAnalytics['revenueImpact'] as double) + 
-                                (voucherAnalytics['revenueImpact'] as double);
-      final totalEngagement = (offerAnalytics['totalClaims'] as int) + 
-                             (voucherAnalytics['totalRedemptions'] as int);
-      final conversionRate = totalEngagement > 0 ? 
-          (offerAnalytics['totalViews'] as int) + (voucherAnalytics['totalViews'] as int) / totalEngagement : 0.0;
+
+      final totalRevenueImpact = (offerAnalytics['revenueImpact'] as double) +
+          (voucherAnalytics['revenueImpact'] as double);
+      final totalEngagement = (offerAnalytics['totalClaims'] as int) +
+          (voucherAnalytics['totalRedemptions'] as int);
+      final conversionRate = totalEngagement > 0
+          ? (offerAnalytics['totalViews'] as int) +
+              (voucherAnalytics['totalViews'] as int) / totalEngagement
+          : 0.0;
 
       return {
         'offerAnalytics': offerAnalytics,
@@ -1097,7 +1371,8 @@ static Future<void> redeemVoucher({
       return null;
     } catch (e) {
       // Handle permission errors gracefully
-      if (e.toString().contains('PERMISSION_DENIED') || e.toString().contains('Missing or insufficient permissions')) {
+      if (e.toString().contains('PERMISSION_DENIED') ||
+          e.toString().contains('Missing or insufficient permissions')) {
         print('Permission denied accessing gas station: $stationId');
         return null;
       }
@@ -1110,74 +1385,106 @@ static Future<void> redeemVoucher({
     try {
       print('[DEBUG] FirestoreService.getAllGasStations: Starting query...');
       final querySnapshot = await gasStationsCollection.get();
-      print('[DEBUG] FirestoreService.getAllGasStations: Query completed. Found ${querySnapshot.docs.length} documents');
+      print(
+          '[DEBUG] FirestoreService.getAllGasStations: Query completed. Found ${querySnapshot.docs.length} documents');
 
       if (querySnapshot.docs.isEmpty) {
-        print('[DEBUG] FirestoreService.getAllGasStations: No documents found in gas_stations collection');
-        print('[DEBUG] FirestoreService.getAllGasStations: This might indicate:');
-        print('[DEBUG] FirestoreService.getAllGasStations: 1. Collection is empty');
-        print('[DEBUG] FirestoreService.getAllGasStations: 2. Permission denied (check firestore.rules)');
-        print('[DEBUG] FirestoreService.getAllGasStations: 3. Network connectivity issues');
+        print(
+            '[DEBUG] FirestoreService.getAllGasStations: No documents found in gas_stations collection');
+        print(
+            '[DEBUG] FirestoreService.getAllGasStations: This might indicate:');
+        print(
+            '[DEBUG] FirestoreService.getAllGasStations: 1. Collection is empty');
+        print(
+            '[DEBUG] FirestoreService.getAllGasStations: 2. Permission denied (check firestore.rules)');
+        print(
+            '[DEBUG] FirestoreService.getAllGasStations: 3. Network connectivity issues');
       }
 
       final stations = <Map<String, dynamic>>[];
-      
+
       for (final doc in querySnapshot.docs) {
         final data = doc.data() as Map<String, dynamic>;
         data['id'] = doc.id;
 
-        print('[DEBUG] FirestoreService.getAllGasStations: Processing station ${doc.id}');
-        print('[DEBUG] FirestoreService.getAllGasStations: Raw data keys: ${data.keys.toList()}');
-        print('[DEBUG] FirestoreService.getAllGasStations: Has ownerId: ${data.containsKey('ownerId')}');
-        print('[DEBUG] FirestoreService.getAllGasStations: ownerId value: ${data['ownerId']}');
+        print(
+            '[DEBUG] FirestoreService.getAllGasStations: Processing station ${doc.id}');
+        print(
+            '[DEBUG] FirestoreService.getAllGasStations: Raw data keys: ${data.keys.toList()}');
+        print(
+            '[DEBUG] FirestoreService.getAllGasStations: Has ownerId: ${data.containsKey('ownerId')}');
+        print(
+            '[DEBUG] FirestoreService.getAllGasStations: ownerId value: ${data['ownerId']}');
 
         // Handle GeoPoint -> Map
         // Check 'geoPoint', 'position', and 'location' fields (location is used in some older documents)
         print('[DEBUG] Station ${doc.id}: Checking position fields...');
-        print('[DEBUG] Station ${doc.id}: geoPoint type: ${data['geoPoint']?.runtimeType}, value: ${data['geoPoint']}');
-        print('[DEBUG] Station ${doc.id}: position type: ${data['position']?.runtimeType}, value: ${data['position']}');
-        print('[DEBUG] Station ${doc.id}: location type: ${data['location']?.runtimeType}, value: ${data['location']}');
-        
+        print(
+            '[DEBUG] Station ${doc.id}: geoPoint type: ${data['geoPoint']?.runtimeType}, value: ${data['geoPoint']}');
+        print(
+            '[DEBUG] Station ${doc.id}: position type: ${data['position']?.runtimeType}, value: ${data['position']}');
+        print(
+            '[DEBUG] Station ${doc.id}: location type: ${data['location']?.runtimeType}, value: ${data['location']}');
+
         if (data['geoPoint'] is GeoPoint) {
           final geo = data['geoPoint'] as GeoPoint;
-          data['position'] = {'latitude': geo.latitude, 'longitude': geo.longitude};
-          print('[DEBUG] FirestoreService.getAllGasStations: Converted geoPoint to position Map for station ${doc.id}: lat=${geo.latitude}, lng=${geo.longitude}');
+          data['position'] = {
+            'latitude': geo.latitude,
+            'longitude': geo.longitude
+          };
+          print(
+              '[DEBUG] FirestoreService.getAllGasStations: Converted geoPoint to position Map for station ${doc.id}: lat=${geo.latitude}, lng=${geo.longitude}');
         } else if (data['position'] is GeoPoint) {
           final geo = data['position'] as GeoPoint;
-          data['position'] = {'latitude': geo.latitude, 'longitude': geo.longitude};
-          print('[DEBUG] FirestoreService.getAllGasStations: Converted position GeoPoint to Map for station ${doc.id}: lat=${geo.latitude}, lng=${geo.longitude}');
+          data['position'] = {
+            'latitude': geo.latitude,
+            'longitude': geo.longitude
+          };
+          print(
+              '[DEBUG] FirestoreService.getAllGasStations: Converted position GeoPoint to Map for station ${doc.id}: lat=${geo.latitude}, lng=${geo.longitude}');
         } else if (data['location'] is GeoPoint) {
           // Handle 'location' field (used in some older documents)
           final geo = data['location'] as GeoPoint;
-          data['position'] = {'latitude': geo.latitude, 'longitude': geo.longitude};
-          print('[DEBUG] FirestoreService.getAllGasStations: Converted location GeoPoint to position Map for station ${doc.id}: lat=${geo.latitude}, lng=${geo.longitude}');
-          
+          data['position'] = {
+            'latitude': geo.latitude,
+            'longitude': geo.longitude
+          };
+          print(
+              '[DEBUG] FirestoreService.getAllGasStations: Converted location GeoPoint to position Map for station ${doc.id}: lat=${geo.latitude}, lng=${geo.longitude}');
+
           // Also update the document to use the standard field names (optional - may fail if no permission)
           try {
             await gasStationsCollection.doc(doc.id).update({
               'geoPoint': geo,
               'position': data['position'],
             });
-            print('[DEBUG] Updated station document to use geoPoint and position fields');
+            print(
+                '[DEBUG] Updated station document to use geoPoint and position fields');
           } catch (e) {
             // Permission denied is OK - the position is still available in the data
-            print('[DEBUG] Could not update station document (permission denied is OK): $e');
+            print(
+                '[DEBUG] Could not update station document (permission denied is OK): $e');
           }
         } else if (data['geoPoint'] != null && data['position'] == null) {
           // If geoPoint exists but position doesn't, copy it
           if (data['geoPoint'] is Map) {
             data['position'] = data['geoPoint'];
-            print('[DEBUG] FirestoreService.getAllGasStations: Copied geoPoint Map to position for station ${doc.id}');
+            print(
+                '[DEBUG] FirestoreService.getAllGasStations: Copied geoPoint Map to position for station ${doc.id}');
           }
-        } else if (data['geoPoint'] == null && data['position'] == null && data['location'] == null) {
-          print('[DEBUG] WARNING: Station ${doc.id} has no position or geoPoint field!');
+        } else if (data['geoPoint'] == null &&
+            data['position'] == null &&
+            data['location'] == null) {
+          print(
+              '[DEBUG] WARNING: Station ${doc.id} has no position or geoPoint field!');
           // Try to get position from stationLat/stationLng if available (from user document)
           if (data['stationLat'] != null && data['stationLng'] != null) {
             data['position'] = {
               'latitude': (data['stationLat'] as num).toDouble(),
               'longitude': (data['stationLng'] as num).toDouble(),
             };
-            print('[DEBUG] Using stationLat/stationLng for position: lat=${data['stationLat']}, lng=${data['stationLng']}');
+            print(
+                '[DEBUG] Using stationLat/stationLng for position: lat=${data['stationLat']}, lng=${data['stationLng']}');
           } else {
             // Try to get position from owner's user document
             final ownerId = data['ownerId'] as String?;
@@ -1191,29 +1498,37 @@ static Future<void> redeemVoucher({
                   if (stationLat != null && stationLng != null) {
                     final lat = (stationLat as num).toDouble();
                     final lng = (stationLng as num).toDouble();
-                    
+
                     // Validate coordinates are reasonable (Philippines bounds: lat ~5-20, lng ~115-127)
                     // If coordinates seem swapped or out of bounds, try swapping them
-                    bool coordinatesValid = (lat >= 4.0 && lat <= 21.0 && lng >= 115.0 && lng <= 128.0);
-                    bool mightBeSwapped = (lng >= 4.0 && lng <= 21.0 && lat >= 115.0 && lat <= 128.0);
-                    
+                    bool coordinatesValid = (lat >= 4.0 &&
+                        lat <= 21.0 &&
+                        lng >= 115.0 &&
+                        lng <= 128.0);
+                    bool mightBeSwapped = (lng >= 4.0 &&
+                        lng <= 21.0 &&
+                        lat >= 115.0 &&
+                        lat <= 128.0);
+
                     double finalLat = lat;
                     double finalLng = lng;
-                    
+
                     if (!coordinatesValid && mightBeSwapped) {
-                      print('[DEBUG] WARNING: Coordinates appear to be swapped! Swapping lat/lng...');
+                      print(
+                          '[DEBUG] WARNING: Coordinates appear to be swapped! Swapping lat/lng...');
                       finalLat = lng;
                       finalLng = lat;
                       print('[DEBUG] Original: lat=$lat, lng=$lng');
                       print('[DEBUG] Swapped: lat=$finalLat, lng=$finalLng');
                     }
-                    
+
                     data['position'] = {
                       'latitude': finalLat,
                       'longitude': finalLng,
                     };
-                    print('[DEBUG] Retrieved position from user document: lat=$finalLat, lng=$finalLng');
-                    
+                    print(
+                        '[DEBUG] Retrieved position from user document: lat=$finalLat, lng=$finalLng');
+
                     // Update the station document with the position for future use (optional - may fail if no permission)
                     try {
                       final geoPoint = GeoPoint(finalLat, finalLng);
@@ -1224,27 +1539,31 @@ static Future<void> redeemVoucher({
                       print('[DEBUG] Updated station document with position');
                     } catch (updateError) {
                       // Permission denied is OK - the position is still available in the data
-                      print('[DEBUG] Could not update station document (permission denied is OK): $updateError');
+                      print(
+                          '[DEBUG] Could not update station document (permission denied is OK): $updateError');
                     }
                   }
                 }
               } catch (e) {
-                print('[DEBUG] Error retrieving position from user document: $e');
+                print(
+                    '[DEBUG] Error retrieving position from user document: $e');
               }
             }
             if (data['position'] == null) {
-              print('[DEBUG] ERROR: Station ${doc.id} has no position data at all!');
+              print(
+                  '[DEBUG] ERROR: Station ${doc.id} has no position data at all!');
             }
           }
         }
-        
+
         // Final check: if position is still (0,0), try to get it from user document
         if (data['position'] != null) {
           final posMap = data['position'] as Map<String, dynamic>;
           final lat = (posMap['latitude'] ?? 0.0).toDouble();
           final lng = (posMap['longitude'] ?? 0.0).toDouble();
           if (lat == 0.0 && lng == 0.0) {
-            print('[DEBUG] WARNING: Station ${doc.id} has position (0,0), trying to fix...');
+            print(
+                '[DEBUG] WARNING: Station ${doc.id} has position (0,0), trying to fix...');
             final ownerId = data['ownerId'] as String?;
             if (ownerId != null && ownerId.isNotEmpty) {
               try {
@@ -1253,34 +1572,43 @@ static Future<void> redeemVoucher({
                   final userData = userDoc.data() as Map<String, dynamic>?;
                   final stationLat = userData?['stationLat'];
                   final stationLng = userData?['stationLng'];
-                  if (stationLat != null && stationLng != null && 
-                      (stationLat as num).toDouble() != 0.0 && 
+                  if (stationLat != null &&
+                      stationLng != null &&
+                      (stationLat as num).toDouble() != 0.0 &&
                       (stationLng as num).toDouble() != 0.0) {
                     final lat = (stationLat as num).toDouble();
                     final lng = (stationLng as num).toDouble();
-                    
+
                     // Validate coordinates are reasonable (Philippines bounds: lat ~5-20, lng ~115-127)
                     // If coordinates seem swapped or out of bounds, try swapping them
-                    bool coordinatesValid = (lat >= 4.0 && lat <= 21.0 && lng >= 115.0 && lng <= 128.0);
-                    bool mightBeSwapped = (lng >= 4.0 && lng <= 21.0 && lat >= 115.0 && lat <= 128.0);
-                    
+                    bool coordinatesValid = (lat >= 4.0 &&
+                        lat <= 21.0 &&
+                        lng >= 115.0 &&
+                        lng <= 128.0);
+                    bool mightBeSwapped = (lng >= 4.0 &&
+                        lng <= 21.0 &&
+                        lat >= 115.0 &&
+                        lat <= 128.0);
+
                     double finalLat = lat;
                     double finalLng = lng;
-                    
+
                     if (!coordinatesValid && mightBeSwapped) {
-                      print('[DEBUG] WARNING: Coordinates appear to be swapped! Swapping lat/lng...');
+                      print(
+                          '[DEBUG] WARNING: Coordinates appear to be swapped! Swapping lat/lng...');
                       finalLat = lng;
                       finalLng = lat;
                       print('[DEBUG] Original: lat=$lat, lng=$lng');
                       print('[DEBUG] Swapped: lat=$finalLat, lng=$finalLng');
                     }
-                    
+
                     data['position'] = {
                       'latitude': finalLat,
                       'longitude': finalLng,
                     };
-                    print('[DEBUG] Fixed position from user document: lat=$finalLat, lng=$finalLng');
-                    
+                    print(
+                        '[DEBUG] Fixed position from user document: lat=$finalLat, lng=$finalLng');
+
                     // Update the station document with the correct position (optional - may fail if no permission)
                     try {
                       final geoPoint = GeoPoint(finalLat, finalLng);
@@ -1288,10 +1616,12 @@ static Future<void> redeemVoucher({
                         'geoPoint': geoPoint,
                         'position': data['position'],
                       });
-                      print('[DEBUG] Updated station document with fixed position');
+                      print(
+                          '[DEBUG] Updated station document with fixed position');
                     } catch (updateError) {
                       // Permission denied is OK - the position is still available in the data
-                      print('[DEBUG] Could not update station document (permission denied is OK): $updateError');
+                      print(
+                          '[DEBUG] Could not update station document (permission denied is OK): $updateError');
                     }
                   }
                 }
@@ -1304,39 +1634,46 @@ static Future<void> redeemVoucher({
 
         // Ensure prices is Map<String, double>
         if (data['prices'] != null) {
-          data['prices'] = Map<String, double>.from(
-            (data['prices'] as Map).map((k, v) => MapEntry(k, (v as num).toDouble()))
-          );
-          print('[DEBUG] FirestoreService.getAllGasStations: Processed prices for station ${doc.id}: ${data['prices']}');
+          data['prices'] = Map<String, double>.from((data['prices'] as Map)
+              .map((k, v) => MapEntry(k, (v as num).toDouble())));
+          print(
+              '[DEBUG] FirestoreService.getAllGasStations: Processed prices for station ${doc.id}: ${data['prices']}');
         } else {
           data['prices'] = {};
-          print('[DEBUG] FirestoreService.getAllGasStations: No prices found for station ${doc.id}');
+          print(
+              '[DEBUG] FirestoreService.getAllGasStations: No prices found for station ${doc.id}');
         }
 
         // Ensure amenities and services are synchronized
         if (data.containsKey('services') && !data.containsKey('amenities')) {
           data['amenities'] = data['services'];
-        } else if (data.containsKey('amenities') && !data.containsKey('services')) {
+        } else if (data.containsKey('amenities') &&
+            !data.containsKey('services')) {
           data['services'] = data['amenities'];
         }
 
         stations.add(data);
       }
 
-      print('[DEBUG] FirestoreService.getAllGasStations: Successfully processed ${stations.length} stations');
+      print(
+          '[DEBUG] FirestoreService.getAllGasStations: Successfully processed ${stations.length} stations');
       return stations;
     } catch (e) {
-      print('[ERROR] FirestoreService.getAllGasStations: Failed to get all gas stations: $e');
-      print('[ERROR] FirestoreService.getAllGasStations: Error type: ${e.runtimeType}');
+      print(
+          '[ERROR] FirestoreService.getAllGasStations: Failed to get all gas stations: $e');
+      print(
+          '[ERROR] FirestoreService.getAllGasStations: Error type: ${e.runtimeType}');
       if (e.toString().contains('PERMISSION_DENIED')) {
-        print('[ERROR] FirestoreService.getAllGasStations: Permission denied - check firestore.rules');
+        print(
+            '[ERROR] FirestoreService.getAllGasStations: Permission denied - check firestore.rules');
       }
       throw Exception('Failed to get all gas stations: $e');
     }
   }
 
   // Get gas stations by owner
-  static Future<List<Map<String, dynamic>>> getGasStationsByOwner(String ownerId) async {
+  static Future<List<Map<String, dynamic>>> getGasStationsByOwner(
+      String ownerId) async {
     try {
       final querySnapshot = await gasStationsCollection
           .where('ownerId', isEqualTo: ownerId)
@@ -1348,7 +1685,8 @@ static Future<void> redeemVoucher({
       }).toList();
     } catch (e) {
       // Handle permission errors gracefully
-      if (e.toString().contains('PERMISSION_DENIED') || e.toString().contains('Missing or insufficient permissions')) {
+      if (e.toString().contains('PERMISSION_DENIED') ||
+          e.toString().contains('Missing or insufficient permissions')) {
         print('Permission denied accessing gas stations for owner: $ownerId');
         return [];
       }
@@ -1371,7 +1709,8 @@ static Future<void> redeemVoucher({
         'lastUpdated': FieldValue.serverTimestamp(),
       });
     } catch (e) {
-      throw Exception('Failed to update gas station prices and performance: $e');
+      throw Exception(
+          'Failed to update gas station prices and performance: $e');
     }
   }
 
@@ -1413,7 +1752,8 @@ static Future<void> redeemVoucher({
   }) async {
     try {
       await gasStationsCollection.doc(stationId).update({
-        'services': FieldValue.arrayUnion([amenity]), // Keep for backward compatibility
+        'services':
+            FieldValue.arrayUnion([amenity]), // Keep for backward compatibility
         'amenities': FieldValue.arrayUnion([amenity]), // Update amenities field
         'lastUpdated': FieldValue.serverTimestamp(),
       });
@@ -1429,8 +1769,10 @@ static Future<void> redeemVoucher({
   }) async {
     try {
       await gasStationsCollection.doc(stationId).update({
-        'services': FieldValue.arrayRemove([amenity]), // Keep for backward compatibility
-        'amenities': FieldValue.arrayRemove([amenity]), // Update amenities field
+        'services': FieldValue.arrayRemove(
+            [amenity]), // Keep for backward compatibility
+        'amenities':
+            FieldValue.arrayRemove([amenity]), // Update amenities field
         'lastUpdated': FieldValue.serverTimestamp(),
       });
     } catch (e) {
@@ -1439,13 +1781,15 @@ static Future<void> redeemVoucher({
   }
 
   // Get gas station amenities
-  static Future<List<Map<String, dynamic>>> getGasStationAmenities(String stationId) async {
+  static Future<List<Map<String, dynamic>>> getGasStationAmenities(
+      String stationId) async {
     try {
       final doc = await gasStationsCollection.doc(stationId).get();
       if (doc.exists) {
         final data = doc.data() as Map<String, dynamic>;
         // Use amenities field, fallback to services for backward compatibility
-        return List<Map<String, dynamic>>.from(data['amenities'] ?? data['services'] ?? []);
+        return List<Map<String, dynamic>>.from(
+            data['amenities'] ?? data['services'] ?? []);
       }
       return [];
     } catch (e) {
@@ -1475,8 +1819,6 @@ static Future<void> redeemVoucher({
     }
   }
 
-  
-
   // Add or update rating with comment for a station
   static Future<void> setRatingWithComment({
     required String stationId,
@@ -1491,14 +1833,14 @@ static Future<void> redeemVoucher({
           .collection('ratings')
           .doc(userId)
           .set({
-            'stationId': stationId,
-            'userId': userId,
-            'userName': userName,
-            'rating': rating,
-            'comment': comment ?? '',
-            'createdAt': FieldValue.serverTimestamp(),
-            'updatedAt': FieldValue.serverTimestamp(),
-          }, SetOptions(merge: true));
+        'stationId': stationId,
+        'userId': userId,
+        'userName': userName,
+        'rating': rating,
+        'comment': comment ?? '',
+        'createdAt': FieldValue.serverTimestamp(),
+        'updatedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
     } catch (e) {
       throw Exception('Failed to set rating with comment: $e');
     }
@@ -1525,7 +1867,8 @@ static Future<void> redeemVoucher({
         'updatedAt': FieldValue.serverTimestamp(),
       }, SetOptions(merge: true));
     } catch (e) {
-      throw Exception('Failed to set rating with comment in station_ratings: $e');
+      throw Exception(
+          'Failed to set rating with comment in station_ratings: $e');
     }
   }
 
@@ -1538,8 +1881,19 @@ static Future<void> redeemVoucher({
         .snapshots();
   }
 
+  // Get all ratings from station_ratings collection for a specific station
+  static Stream<QuerySnapshot> getStationRatingsFromGlobalCollection(
+      String stationId) {
+    return _db
+        .collection('station_ratings')
+        .where('stationId', isEqualTo: stationId)
+        .orderBy('updatedAt', descending: true)
+        .snapshots();
+  }
+
   // Get user's rating with comment for a specific station
-  static Future<DocumentSnapshot?> getUserRatingWithComment(String stationId, String userId) async {
+  static Future<DocumentSnapshot?> getUserRatingWithComment(
+      String stationId, String userId) async {
     return await gasStationsCollection
         .doc(stationId)
         .collection('ratings')
@@ -1548,18 +1902,13 @@ static Future<void> redeemVoucher({
   }
 
   // Get average rating for a station including comments
-  static Future<Map<String, dynamic>> getAverageRatingWithStats(String stationId) async {
-    final query = await gasStationsCollection
-        .doc(stationId)
-        .collection('ratings')
-        .get();
+  static Future<Map<String, dynamic>> getAverageRatingWithStats(
+      String stationId) async {
+    final query =
+        await gasStationsCollection.doc(stationId).collection('ratings').get();
 
     if (query.docs.isEmpty) {
-      return {
-        'averageRating': 0.0,
-        'ratingCount': 0,
-        'commentCount': 0
-      };
+      return {'averageRating': 0.0, 'ratingCount': 0, 'commentCount': 0};
     }
 
     double totalRating = 0.0;
@@ -1608,23 +1957,23 @@ static Future<void> redeemVoucher({
   }) async {
     try {
       final timestamp = DateTime.now();
-      
+
       for (final entry in prices.entries) {
         final fuelType = entry.key;
         final price = entry.value;
-        
+
         if (price > 0) {
           await gasStationsCollection
               .doc(stationId)
               .collection('price_history')
               .add({
-                'stationId': stationId,
-                'stationName': stationName,
-                'stationBrand': stationBrand,
-                'fuelType': fuelType,
-                'price': price,
-                'timestamp': Timestamp.fromDate(timestamp),
-              });
+            'stationId': stationId,
+            'stationName': stationName,
+            'stationBrand': stationBrand,
+            'fuelType': fuelType,
+            'price': price,
+            'timestamp': Timestamp.fromDate(timestamp),
+          });
         }
       }
     } catch (e) {
@@ -1633,10 +1982,11 @@ static Future<void> redeemVoucher({
   }
 
   // Get user's assigned gas stations
-  static Future<List<Map<String, dynamic>>> getUserAssignedStations(String userId) async {
+  static Future<List<Map<String, dynamic>>> getUserAssignedStations(
+      String userId) async {
     try {
       print('[DEBUG] Getting assigned stations for user: $userId');
-      
+
       final userDoc = await usersCollection.doc(userId).get();
       if (!userDoc.exists) {
         print('[DEBUG] User document does not exist for userId: $userId');
@@ -1645,12 +1995,13 @@ static Future<void> redeemVoucher({
 
       final userData = userDoc.data() as Map<String, dynamic>;
       final stationIds = List<String>.from(userData['assignedStations'] ?? []);
-      
+
       print('[DEBUG] Found assigned station IDs: $stationIds');
 
       // If no assigned stations, try to get stations by owner ID as fallback
       if (stationIds.isEmpty) {
-        print('[DEBUG] No assigned stations found, falling back to stations by owner ID');
+        print(
+            '[DEBUG] No assigned stations found, falling back to stations by owner ID');
         return await getGasStationsByOwner(userId);
       }
 
@@ -1669,7 +2020,7 @@ static Future<void> redeemVoucher({
           print('[ERROR] Error loading station $stationId: $e');
         }
       }
-      
+
       print('[DEBUG] Returning ${stations.length} stations for user $userId');
       return stations;
     } catch (e) {
@@ -1720,7 +2071,8 @@ static Future<void> redeemVoucher({
     int? daysBack,
   }) async {
     try {
-      print('DEBUG: Querying price history for station: $stationId, fuelType: $fuelType, daysBack: $daysBack');
+      print(
+          'DEBUG: Querying price history for station: $stationId, fuelType: $fuelType, daysBack: $daysBack');
 
       Query query = gasStationsCollection
           .doc(stationId)
@@ -1738,12 +2090,14 @@ static Future<void> redeemVoucher({
       // Apply date filter if specified
       if (daysBack != null) {
         final cutoffDate = DateTime.now().subtract(Duration(days: daysBack));
-        query = query.where('timestamp', isGreaterThanOrEqualTo: Timestamp.fromDate(cutoffDate));
+        query = query.where('timestamp',
+            isGreaterThanOrEqualTo: Timestamp.fromDate(cutoffDate));
         print('DEBUG: Applying date filter: $cutoffDate');
       }
 
       final querySnapshot = await query.get();
-      print('DEBUG: Found ${querySnapshot.docs.length} price history documents');
+      print(
+          'DEBUG: Found ${querySnapshot.docs.length} price history documents');
 
       final priceHistory = querySnapshot.docs.map((doc) {
         final data = doc.data() as Map<String, dynamic>;
@@ -1756,7 +2110,8 @@ static Future<void> redeemVoucher({
           price: (data['price'] as num).toDouble(),
           timestamp: (data['timestamp'] as Timestamp).toDate(),
         );
-        print('DEBUG: Price history item: ${priceHistoryItem.fuelType} - ${priceHistoryItem.price} at ${priceHistoryItem.timestamp}');
+        print(
+            'DEBUG: Price history item: ${priceHistoryItem.fuelType} - ${priceHistoryItem.price} at ${priceHistoryItem.timestamp}');
         return priceHistoryItem;
       }).toList();
 
@@ -1764,8 +2119,10 @@ static Future<void> redeemVoucher({
       return priceHistory;
     } catch (e) {
       // Handle permission errors gracefully
-      if (e.toString().contains('PERMISSION_DENIED') || e.toString().contains('Missing or insufficient permissions')) {
-        print('Permission denied accessing price history for station: $stationId');
+      if (e.toString().contains('PERMISSION_DENIED') ||
+          e.toString().contains('Missing or insufficient permissions')) {
+        print(
+            'Permission denied accessing price history for station: $stationId');
         return [];
       }
       throw Exception('Failed to get price history: $e');
@@ -1799,7 +2156,8 @@ static Future<void> redeemVoucher({
       return allHistory;
     } catch (e) {
       // Handle permission errors gracefully
-      if (e.toString().contains('PERMISSION_DENIED') || e.toString().contains('Missing or insufficient permissions')) {
+      if (e.toString().contains('PERMISSION_DENIED') ||
+          e.toString().contains('Missing or insufficient permissions')) {
         print('Permission denied accessing price history for owner: $ownerId');
         return [];
       }
@@ -1813,8 +2171,8 @@ static Future<void> redeemVoucher({
     int? daysBack,
   }) async {
     try {
-      Query query = gasStationsCollection
-          .orderBy('lastUpdated', descending: true);
+      Query query =
+          gasStationsCollection.orderBy('lastUpdated', descending: true);
 
       final querySnapshot = await query.get();
       final allHistory = <PriceHistory>[];
@@ -1838,7 +2196,8 @@ static Future<void> redeemVoucher({
         // Apply date filter if specified
         if (daysBack != null) {
           final cutoffDate = DateTime.now().subtract(Duration(days: daysBack));
-          historyQuery = historyQuery.where('timestamp', isGreaterThanOrEqualTo: Timestamp.fromDate(cutoffDate));
+          historyQuery = historyQuery.where('timestamp',
+              isGreaterThanOrEqualTo: Timestamp.fromDate(cutoffDate));
         }
 
         final historySnapshot = await historyQuery.get();
@@ -1865,7 +2224,8 @@ static Future<void> redeemVoucher({
       return allHistory;
     } catch (e) {
       // Handle permission errors gracefully
-      if (e.toString().contains('PERMISSION_DENIED') || e.toString().contains('Missing or insufficient permissions')) {
+      if (e.toString().contains('PERMISSION_DENIED') ||
+          e.toString().contains('Missing or insufficient permissions')) {
         print('Permission denied accessing all price history');
         return [];
       }
@@ -1933,26 +2293,111 @@ static Future<void> redeemVoucher({
       return [];
     });
   }
+  // Add this helper method to firestore_service.dart (for testing/debugging only)
+// Remove this in production!
+
+// Clear a specific user's voucher redemption (for testing)
+  static Future<void> clearVoucherRedemption({
+    required String stationId,
+    required String userId,
+    required String voucherId,
+  }) async {
+    try {
+      print(
+          '[DEBUG] Clearing redemption for user $userId, voucher $voucherId at station $stationId');
+
+      // Delete from station's vouchers_redemptions
+      final redemptionDocId = '${userId}_$voucherId';
+      await gasStationsCollection
+          .doc(stationId)
+          .collection('vouchers_redemptions')
+          .doc(redemptionDocId)
+          .delete();
+
+      print('[DEBUG] Cleared station redemption document');
+
+      // Find and delete from user's redeemed_vouchers
+      final userRedemptions = await usersCollection
+          .doc(userId)
+          .collection('redeemed_vouchers')
+          .where('voucherId', isEqualTo: voucherId)
+          .where('stationId', isEqualTo: stationId)
+          .get();
+
+      for (final doc in userRedemptions.docs) {
+        await doc.reference.delete();
+        print('[DEBUG] Deleted user redemption document: ${doc.id}');
+      }
+
+      print('[DEBUG] Successfully cleared all redemptions');
+    } catch (e) {
+      print('[ERROR] Failed to clear redemption: $e');
+      throw Exception('Failed to clear redemption: $e');
+    }
+  }
+
+// Clear ALL redemptions for a user at a station (for testing)
+  static Future<void> clearAllUserRedemptionsAtStation({
+    required String stationId,
+    required String userId,
+  }) async {
+    try {
+      print(
+          '[DEBUG] Clearing all redemptions for user $userId at station $stationId');
+
+      // Delete all from station's vouchers_redemptions that start with userId
+      final stationRedemptions = await gasStationsCollection
+          .doc(stationId)
+          .collection('vouchers_redemptions')
+          .get();
+
+      for (final doc in stationRedemptions.docs) {
+        if (doc.id.startsWith(userId)) {
+          await doc.reference.delete();
+          print('[DEBUG] Deleted station redemption: ${doc.id}');
+        }
+      }
+
+      // Delete all from user's redeemed_vouchers for this station
+      final userRedemptions = await usersCollection
+          .doc(userId)
+          .collection('redeemed_vouchers')
+          .where('stationId', isEqualTo: stationId)
+          .get();
+
+      for (final doc in userRedemptions.docs) {
+        await doc.reference.delete();
+        print('[DEBUG] Deleted user redemption document: ${doc.id}');
+      }
+
+      print('[DEBUG] Successfully cleared all redemptions');
+    } catch (e) {
+      print('[ERROR] Failed to clear redemptions: $e');
+      throw Exception('Failed to clear redemptions: $e');
+    }
+  }
 }
 
-  Map<String, double> _normalizePrices(Map<String, double> prices) {
-    final normalized = <String, double>{};
-    prices.forEach((key, value) {
-      final normalizedKey = key.trim().toLowerCase();
-      if (normalizedKey.isEmpty) {
-        print('Warning: Empty price key found, skipping');
-        return;
-      }
-      if (!value.isFinite || value.isNaN) {
-        print('Warning: Invalid price value for $normalizedKey: $value, skipping');
-        return;
-      }
-      double sanitizedValue = value;
-      if (sanitizedValue < 0) {
-        print('Warning: Negative price value for $normalizedKey: $value, using 0');
-        sanitizedValue = 0.0;
-      }
-      normalized[normalizedKey] = sanitizedValue;
-    });
-    return normalized;
-  }
+Map<String, double> _normalizePrices(Map<String, double> prices) {
+  final normalized = <String, double>{};
+  prices.forEach((key, value) {
+    final normalizedKey = key.trim().toLowerCase();
+    if (normalizedKey.isEmpty) {
+      print('Warning: Empty price key found, skipping');
+      return;
+    }
+    if (!value.isFinite || value.isNaN) {
+      print(
+          'Warning: Invalid price value for $normalizedKey: $value, skipping');
+      return;
+    }
+    double sanitizedValue = value;
+    if (sanitizedValue < 0) {
+      print(
+          'Warning: Negative price value for $normalizedKey: $value, using 0');
+      sanitizedValue = 0.0;
+    }
+    normalized[normalizedKey] = sanitizedValue;
+  });
+  return normalized;
+}

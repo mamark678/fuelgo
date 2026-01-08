@@ -250,3 +250,4 @@ exports.deleteAuthUser = functions.https.onCall(async (data, context) => {
     );
   }
 });
+

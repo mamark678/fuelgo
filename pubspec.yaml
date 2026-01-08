@@ -51,6 +51,7 @@ flutter:
   assets:
     - assets/fuelgo.png
     - assets/fuelgo1.png
+    - assets/fuelgo2.png
     - assets/google_logo.png
 
 flutter_launcher_icons:

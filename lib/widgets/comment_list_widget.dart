@@ -1,6 +1,12 @@
+import 'dart:convert';
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
+import 'package:fuelgo/services/user_service_fixed.dart';
 import 'package:intl/intl.dart';
+
+import 'animated_card.dart';
+import 'fade_in_widget.dart';
 
 class CommentListWidget extends StatefulWidget {
   final String stationId;
@@ -94,11 +100,14 @@ class CommentListWidgetState extends State<CommentListWidget> {
           itemCount: _comments.length,
           itemBuilder: (context, index) {
             final commentData = _comments[index].data() as Map<String, dynamic>;
-            return CommentCard(
-              commentData: commentData,
-              isCurrentUser: commentData['userId'] == widget.currentUserId,
-              ratingId: _comments[index].id,
-              onRefresh: _loadComments,
+            return FadeInWidget(
+              delay: Duration(milliseconds: 100 * index),
+              child: CommentCard(
+                commentData: commentData,
+                isCurrentUser: commentData['userId'] == widget.currentUserId,
+                ratingId: _comments[index].id,
+                onRefresh: _loadComments,
+              ),
             );
           },
         ),
@@ -123,88 +132,131 @@ class CommentCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final rating = (commentData['rating'] ?? 0.0).toDouble();
-    final comment = commentData['comment'] ?? '';
-    final userName = commentData['userName'] ?? 'Anonymous User';
-    final createdAt = commentData['createdAt'] as Timestamp?;
-    final formattedDate = createdAt != null 
-        ? DateFormat('MMM dd, yyyy - hh:mm a').format(createdAt.toDate())
-        : 'Recently';
+    final userId = commentData['userId'] as String? ?? '';
 
-    return Card(
-      margin: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 4.0),
-      child: InkWell(
-        onTap: isCurrentUser ? () => _showCommentOptions(context) : null,
-        borderRadius: BorderRadius.circular(8),
-        child: Padding(
-          padding: const EdgeInsets.all(12.0),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Text(
-                    userName,
-                    style: const TextStyle(
-                      fontWeight: FontWeight.bold,
-                      fontSize: 14,
+    return FutureBuilder<Map<String, dynamic>>(
+      future: UserServiceFixed.getUserProfile(userId),
+      builder: (context, snapshot) {
+        final userProfile = snapshot.data ?? {};
+        final profileName = userProfile['name'] as String?;
+        final photoBase64 = userProfile['photoBase64'] as String?;
+
+        // User requested to show name instead of "YOU"
+        // Use profile name if available, otherwise fallback to comment data
+        final displayName =
+            profileName ?? commentData['userName'] ?? 'Anonymous';
+
+        final rating = (commentData['rating'] ?? 0.0).toDouble();
+        final comment = commentData['comment'] ?? '';
+        final createdAt = commentData['createdAt'] as Timestamp?;
+        final formattedDate = createdAt != null
+            ? DateFormat('MMM dd, yyyy - hh:mm a').format(createdAt.toDate())
+            : 'Recently';
+
+        return AnimatedCard(
+          margin: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 4.0),
+          onPressed: isCurrentUser ? () => _showCommentOptions(context) : null,
+          child: Padding(
+            padding: const EdgeInsets.all(12.0),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    // Avatar
+                    CircleAvatar(
+                      radius: 18,
+                      backgroundColor:
+                          Theme.of(context).primaryColor.withOpacity(0.1),
+                      backgroundImage:
+                          photoBase64 != null && photoBase64.isNotEmpty
+                              ? MemoryImage(base64Decode(photoBase64))
+                              : null,
+                      child: photoBase64 == null || photoBase64.isEmpty
+                          ? Text(
+                              displayName.isNotEmpty
+                                  ? displayName[0].toUpperCase()
+                                  : '?',
+                              style: TextStyle(
+                                color: Theme.of(context).primaryColor,
+                                fontWeight: FontWeight.bold,
+                                fontSize: 16,
+                              ),
+                            )
+                          : null,
                     ),
-                  ),
-                  if (isCurrentUser)
-                    const Icon(Icons.more_vert, size: 16, color: Colors.grey),
-                ],
-              ),
-              const SizedBox(height: 4),
-              Row(
-                children: [
-                  ...List.generate(5, (index) {
-                    return Icon(
-                      index < rating ? Icons.star : Icons.star_border,
-                      color: Colors.amber,
-                      size: 16,
-                    );
-                  }),
-                  const SizedBox(width: 8),
-                  Text(
-                    rating.toStringAsFixed(1),
-                    style: const TextStyle(
-                      fontWeight: FontWeight.bold,
-                      fontSize: 14,
+                    const SizedBox(width: 12),
+                    // Name and Options
+                    Expanded(
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Text(
+                            displayName,
+                            style: const TextStyle(
+                              fontWeight: FontWeight.bold,
+                              fontSize: 14,
+                            ),
+                          ),
+                          if (isCurrentUser)
+                            const Icon(Icons.more_vert,
+                                size: 16, color: Colors.grey),
+                        ],
+                      ),
                     ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    ...List.generate(5, (index) {
+                      return Icon(
+                        index < rating ? Icons.star : Icons.star_border,
+                        color: Colors.amber,
+                        size: 16,
+                      );
+                    }),
+                    const SizedBox(width: 8),
+                    Text(
+                      rating.toStringAsFixed(1),
+                      style: const TextStyle(
+                        fontWeight: FontWeight.bold,
+                        fontSize: 14,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                if (comment.isNotEmpty)
+                  Text(
+                    comment,
+                    style: const TextStyle(fontSize: 14),
                   ),
-                ],
-              ),
-              const SizedBox(height: 8),
-              if (comment.isNotEmpty)
+                const SizedBox(height: 4),
                 Text(
-                  comment,
-                  style: const TextStyle(fontSize: 14),
-                ),
-              const SizedBox(height: 4),
-              Text(
-                formattedDate,
-                style: TextStyle(
-                  fontSize: 12,
-                  color: Colors.grey[600],
-                ),
-              ),
-              if (isCurrentUser)
-                const Padding(
-                  padding: EdgeInsets.only(top: 4),
-                  child: Text(
-                    'Tap to delete',
-                    style: TextStyle(
-                      fontSize: 11,
-                      color: Colors.grey,
-                      fontStyle: FontStyle.italic,
-                    ),
+                  formattedDate,
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: Colors.grey[600],
                   ),
                 ),
-            ],
+                if (isCurrentUser)
+                  const Padding(
+                    padding: EdgeInsets.only(top: 4),
+                    child: Text(
+                      'Tap to edit',
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: Colors.grey,
+                        fontStyle: FontStyle.italic,
+                      ),
+                    ),
+                  ),
+              ],
+            ),
           ),
-        ),
-      ),
+        );
+      },
     );
   }
 
@@ -257,7 +309,8 @@ class CommentCard extends StatelessWidget {
   }
 
   void _showEditDialog(BuildContext context) {
-    final TextEditingController commentController = TextEditingController(text: commentData['comment']);
+    final TextEditingController commentController =
+        TextEditingController(text: commentData['comment']);
     double currentRating = (commentData['rating'] ?? 0.0).toDouble();
 
     showDialog(
@@ -275,7 +328,9 @@ class CommentCard extends StatelessWidget {
                     children: List.generate(5, (index) {
                       return IconButton(
                         icon: Icon(
-                          index < currentRating ? Icons.star : Icons.star_border,
+                          index < currentRating
+                              ? Icons.star
+                              : Icons.star_border,
                           color: Colors.amber,
                         ),
                         onPressed: () {

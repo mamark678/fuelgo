@@ -1,4 +1,6 @@
 // lib/screens/verification_screen.dart
+import 'dart:async';
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
@@ -32,6 +34,8 @@ class _VerificationScreenState extends State<VerificationScreen> {
   bool _isResending = false;
   String? _error;
   bool _hasCreatedAccount = false;
+  Timer? _pollTimer;
+  int _pollAttempts = 0;
 
   @override
   void initState() {
@@ -55,6 +59,9 @@ class _VerificationScreenState extends State<VerificationScreen> {
           print('Error sending verification to existing user: $e');
         }
       }
+        // Start a short polling loop so that if user verifies in browser and returns
+        // to the app we detect the emailVerified flag without requiring full manual checks.
+        _startVerificationPolling();
     }
   }
 
@@ -242,6 +249,50 @@ class _VerificationScreenState extends State<VerificationScreen> {
         _isResending = false;
       });
     }
+  }
+
+  void _startVerificationPolling() {
+    _pollTimer?.cancel();
+    _pollAttempts = 0;
+    _pollTimer = Timer.periodic(const Duration(seconds: 3), (timer) async {
+      _pollAttempts++;
+      if (_pollAttempts > 20) {
+        // Stop after ~60 seconds
+        timer.cancel();
+        return;
+      }
+      try {
+        final currentUser = FirebaseAuth.instance.currentUser;
+        if (currentUser == null) return;
+        await currentUser.reload();
+        final refreshed = FirebaseAuth.instance.currentUser;
+        if (refreshed != null && refreshed.emailVerified) {
+          timer.cancel();
+          // mark in Firestore and show success flow
+          await AuthService().markEmailUserAsVerified(refreshed.uid);
+          if (widget.isGoogleUser && widget.credential != null) {
+            try {
+              await refreshed.linkWithCredential(widget.credential!);
+            } catch (_) {}
+          }
+          if (mounted) {
+            // Sign out and go to login (same as normal flow)
+            try {
+              await FirebaseAuth.instance.signOut();
+            } catch (_) {}
+            if (mounted) Navigator.pushReplacementNamed(context, '/login');
+          }
+        }
+      } catch (_) {
+        // ignore transient errors and keep polling
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _pollTimer?.cancel();
+    super.dispose();
   }
 
   @override

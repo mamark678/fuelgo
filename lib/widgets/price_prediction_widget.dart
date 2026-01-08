@@ -1,4 +1,5 @@
 import 'dart:math' as math;
+
 import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
 import 'package:fuelgo/models/analytics_data.dart';
@@ -123,9 +124,9 @@ class PricePredictionWidget extends StatelessWidget {
     }
 
     final recentPrices = analyticsData.pricePoints
-        .skip(analyticsData.pricePoints.length - 7)
-        .map((p) => p.price)
-        .toList();
+      .skip(math.max(0, analyticsData.pricePoints.length - 7))
+      .map((p) => p.price)
+      .toList();
     
     if (recentPrices.length < 2) {
       return {

@@ -75,6 +75,8 @@ class PriceWithReductionWidget extends StatelessWidget {
   final double reductionAmount;
   final String fuelType;
   final VoidCallback? onTap;
+  final double? minPrice;
+  final double? maxPrice;
 
   const PriceWithReductionWidget({
     Key? key,
@@ -82,12 +84,22 @@ class PriceWithReductionWidget extends StatelessWidget {
     required this.reductionAmount,
     required this.fuelType,
     this.onTap,
+    this.minPrice,
+    this.maxPrice,
   }) : super(key: key);
+
+  Color _getPriceColor(double price) {
+    if (minPrice == null || maxPrice == null) return Colors.green;
+    if (price <= minPrice!) return Colors.green;
+    if (price >= maxPrice!) return Colors.red;
+    return Colors.yellow.shade800;
+  }
 
   @override
   Widget build(BuildContext context) {
     final reducedPrice = originalPrice - reductionAmount;
     final hasReduction = reductionAmount > 0;
+    final priceColor = _getPriceColor(reducedPrice);
 
     return Row(
       mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -125,7 +137,7 @@ class PriceWithReductionWidget extends StatelessWidget {
                   style: TextStyle(
                     fontSize: 16,
                     fontWeight: FontWeight.bold,
-                    color: hasReduction ? Colors.green : Colors.green,
+                    color: priceColor,
                   ),
                 ),
                 if (hasReduction)
@@ -161,7 +173,8 @@ class VoucherReductionTooltip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Tooltip(
-      message: 'Price reduced by ₱${reductionAmount.toStringAsFixed(2)} due to voucher: $voucherTitle',
+      message:
+          'Price reduced by ₱${reductionAmount.toStringAsFixed(2)} due to voucher: $voucherTitle',
       child: Icon(
         Icons.info_outline,
         size: 14,

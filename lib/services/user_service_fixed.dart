@@ -17,7 +17,7 @@ class UserServiceFixed {
       return null;
     } catch (e) {
       // Handle permission errors gracefully - users may not have permission to read other user documents
-      if (e.toString().contains('PERMISSION_DENIED') || 
+      if (e.toString().contains('PERMISSION_DENIED') ||
           e.toString().contains('permission-denied') ||
           e.toString().contains('Missing or insufficient permissions')) {
         // This is expected - don't log as error
@@ -34,15 +34,15 @@ class UserServiceFixed {
       if (userId.isEmpty) {
         return 'Unknown User';
       }
-      
+
       final userData = await getUserData(userId);
-      
+
       if (userData != null) {
         // Try to get name from Firestore
         final name = userData['name'] ?? userData['displayName'] ?? 'User';
         return name;
       }
-      
+
       return 'User';
     } catch (e) {
       print('Error fetching user name: $e');
@@ -54,11 +54,11 @@ class UserServiceFixed {
   static Future<String> getUserDisplayName(String userId) async {
     try {
       final userData = await getUserData(userId);
-      
+
       if (userData != null) {
         return userData['name'] ?? userData['displayName'] ?? 'User';
       }
-      
+
       return 'User';
     } catch (e) {
       return 'User';
@@ -91,10 +91,11 @@ class UserServiceFixed {
             .get();
       } catch (error) {
         // Handle permission errors gracefully - users may not have permission to read all user documents
-        if (error.toString().contains('PERMISSION_DENIED') || 
+        if (error.toString().contains('PERMISSION_DENIED') ||
             error.toString().contains('permission-denied') ||
             error.toString().contains('Missing or insufficient permissions')) {
-          print('Permission denied fetching user names (this is expected for some users)');
+          print(
+              'Permission denied fetching user names (this is expected for some users)');
           // Return default names for all user IDs
           return {for (var id in userIds) id: 'User'};
         }
@@ -105,7 +106,8 @@ class UserServiceFixed {
       for (var doc in usersSnapshot.docs) {
         final dataObj = doc.data();
         // doc.data() can be Map<String, dynamic> or null depending on API/version, cast safely
-        final Map<String, dynamic>? data = (dataObj is Map) ? Map<String, dynamic>.from(dataObj) : null;
+        final Map<String, dynamic>? data =
+            (dataObj is Map) ? Map<String, dynamic>.from(dataObj) : null;
         userNames[doc.id] = (data?['name'] as String?) ?? 'User';
       }
 
@@ -120,6 +122,45 @@ class UserServiceFixed {
     } catch (e) {
       print('Error batch fetching user names: $e');
       return {for (var id in userIds) id: 'User'};
+    }
+  }
+
+  /// Get full user profile data
+  static Future<Map<String, dynamic>> getUserProfile(String uid) async {
+    try {
+      final doc = await _db.collection('users').doc(uid).get();
+
+      if (doc.exists) {
+        final data = doc.data();
+        return data != null ? Map<String, dynamic>.from(data) : {};
+      }
+      return {};
+    } catch (e) {
+      print('Error getting user profile: $e');
+      return {};
+    }
+  }
+
+  /// Update user profile (name, location, photoBase64)
+  static Future<void> updateUserProfile({
+    required String uid,
+    String? name,
+    String? location,
+    String? photoBase64,
+  }) async {
+    try {
+      final Map<String, dynamic> updates = {};
+
+      if (name != null) updates['name'] = name;
+      if (location != null) updates['location'] = location;
+      if (photoBase64 != null) updates['photoBase64'] = photoBase64;
+
+      if (updates.isNotEmpty) {
+        await _db.collection('users').doc(uid).update(updates);
+      }
+    } catch (e) {
+      print('Error updating user profile: $e');
+      throw Exception('Failed to update profile: $e');
     }
   }
 }

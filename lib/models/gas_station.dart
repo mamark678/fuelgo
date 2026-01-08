@@ -49,7 +49,8 @@ class GasStation {
   String get fuelTypesString {
     if (prices == null || prices!.isEmpty) return '';
     // Normalize fuel types to title case to avoid duplicates
-    final normalizedTypes = prices!.keys.map((type) => _toTitleCase(type)).toList();
+    final normalizedTypes =
+        prices!.keys.map((type) => _toTitleCase(type)).toList();
     return normalizedTypes.join(', ');
   }
 
@@ -86,16 +87,21 @@ class GasStation {
   double get priceAsDouble {
     if (prices == null || prices!.isEmpty) return double.infinity;
     // Prefer 'Regular' if available, otherwise return the first available value
-    if (prices!.containsKey('Regular') && prices!['Regular'] != null) return prices!['Regular']!;
-    final firstValidPrice = prices!.values.firstWhere((price) => price != null, orElse: () => double.infinity);
+    if (prices!.containsKey('Regular') && prices!['Regular'] != null)
+      return prices!['Regular']!;
+    final firstValidPrice = prices!.values
+        .firstWhere((price) => price != null, orElse: () => double.infinity);
     return firstValidPrice ?? double.infinity;
   }
 
-  String get formattedRating => (averageRating ?? rating ?? 0).toStringAsFixed(1);
+  String get formattedRating =>
+      (averageRating ?? rating ?? 0).toStringAsFixed(1);
 
   String getDistanceFrom(LatLng userLocation) {
     final distance = _calculateDistance(userLocation, position);
-    return distance > 1 ? '${distance.toStringAsFixed(1)} km' : '${(distance * 1000).toStringAsFixed(0)} m';
+    return distance > 1
+        ? '${distance.toStringAsFixed(1)} km'
+        : '${(distance * 1000).toStringAsFixed(0)} m';
   }
 
   // Distance calculation using Haversine formula
@@ -157,20 +163,21 @@ class GasStation {
     // Parse position - check 'position', 'geoPoint', and 'location' fields
     LatLng position;
     var posRaw = map['position'];
-    
+
     // If position is null, check for geoPoint
     if (posRaw == null) {
       posRaw = map['geoPoint'];
     }
-    
+
     // If still null, check for location (used in some older documents)
     if (posRaw == null) {
       posRaw = map['location'];
     }
-    
+
     if (posRaw is Map) {
       final lat = (posRaw['latitude'] ?? posRaw['lat'] ?? 0.0).toDouble();
-      final lng = (posRaw['longitude'] ?? posRaw['lng'] ?? posRaw['lon'] ?? 0.0).toDouble();
+      final lng = (posRaw['longitude'] ?? posRaw['lng'] ?? posRaw['lon'] ?? 0.0)
+          .toDouble();
       position = LatLng(lat, lng);
     } else if (posRaw != null) {
       // Handle GeoPoint type directly (if passed from Firestore)
@@ -194,6 +201,8 @@ class GasStation {
       position: position,
       brand: map['brand']?.toString(),
       prices: _normalizePrices(map['prices']),
+      priceReductions: _normalizePrices(map['priceReductions']),
+      fuelPerformance: _normalizePerformance(map['fuelPerformance']),
       rating: map['rating']?.toDouble(),
       isOpen: map['isOpen'] ?? true,
       address: map['address']?.toString(),
@@ -213,11 +222,13 @@ class GasStation {
       'id': id,
       'name': name,
       'position': {
-        'latitude': position.latitude, 
+        'latitude': position.latitude,
         'longitude': position.longitude
       },
       'brand': brand,
       'prices': prices,
+      'priceReductions': priceReductions,
+      'fuelPerformance': fuelPerformance,
       'rating': rating,
       'isOpen': isOpen,
       'address': address,
@@ -230,6 +241,21 @@ class GasStation {
       'ratings': ratings,
       'averageRating': averageRating,
     };
+  }
+
+  static Map<String, Map<String, dynamic>>? _normalizePerformance(
+      dynamic performance) {
+    if (performance == null) return null;
+    if (performance is Map) {
+      final normalized = <String, Map<String, dynamic>>{};
+      performance.forEach((key, value) {
+        if (value is Map) {
+          normalized[key.toString()] = Map<String, dynamic>.from(value);
+        }
+      });
+      return normalized;
+    }
+    return null;
   }
 
   static Map<String, double>? _normalizePrices(dynamic prices) {

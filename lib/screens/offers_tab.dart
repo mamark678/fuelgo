@@ -128,8 +128,8 @@ class _OffersTabState extends State<OffersTab> {
         );
         await _loadAllData();
         
-        // Send notification if enabled
-        if (newOffer['isNotificationEnabled'] == true) {
+        // Send notification if enabled (per-offer) and global offers notifications are enabled
+        if (newOffer['isNotificationEnabled'] == true && NotificationService().isGlobalOffersEnabled) {
           await NotificationService().showOfferNotification(
             title: 'New Offer Available!',
             body: '${newOffer['title']} at ${newOffer['stationName']}',
@@ -160,8 +160,8 @@ class _OffersTabState extends State<OffersTab> {
         );
         await _loadAllData();
         
-        // Send notification if enabled
-        if (newVoucher['isNotificationEnabled'] == true) {
+        // Send notification if enabled (per-voucher) and global vouchers notifications are enabled
+        if (newVoucher['isNotificationEnabled'] == true && NotificationService().isGlobalVouchersEnabled) {
           await NotificationService().showVoucherNotification(
             title: 'New Voucher Available!',
             body: '${newVoucher['title']} at ${newVoucher['stationName']}',
@@ -192,6 +192,15 @@ class _OffersTabState extends State<OffersTab> {
           newOffer: updatedOffer,
         );
         await _loadAllData();
+        // Send notification on update if enabled and global offers notifications are enabled
+        if (updatedOffer['isNotificationEnabled'] == true && NotificationService().isGlobalOffersEnabled) {
+          await NotificationService().showOfferNotification(
+            title: 'Updated Offer',
+            body: '${updatedOffer['title']} at ${updatedOffer['stationName']}',
+            stationName: updatedOffer['stationName'],
+            offerId: updatedOffer['id'],
+          );
+        }
       } catch (e) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('Failed to update offer: $e')),
@@ -1277,14 +1286,18 @@ class _VoucherFormDialogState extends State<VoucherFormDialog> {
   Future<void> _loadStations() async {
     try {
       final stations = await FirestoreService.getUserAssignedStations(widget.ownerId);
-      setState(() {
-        _stations = stations;
-        _isLoadingStations = false;
-      });
+      if (mounted) {
+        setState(() {
+          _stations = stations;
+          _isLoadingStations = false;
+        });
+      }
     } catch (e) {
-      setState(() {
-        _isLoadingStations = false;
-      });
+      if (mounted) {
+        setState(() {
+          _isLoadingStations = false;
+        });
+      }
     }
   }
 
@@ -1312,7 +1325,7 @@ class _VoucherFormDialogState extends State<VoucherFormDialog> {
       firstDate: now,
       lastDate: DateTime(now.year + 5),
     );
-    if (picked != null) {
+    if (picked != null && mounted) {
       setState(() {
         _validUntil = picked;
       });
@@ -1408,14 +1421,16 @@ class _VoucherFormDialogState extends State<VoucherFormDialog> {
 
   @override
   Widget build(BuildContext context) {
-    return AlertDialog(
-      title: Text(widget.voucher == null ? 'Create Voucher' : 'Edit Voucher'),
-      content: Form(
-        key: _formKey,
-        child: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
+   return AlertDialog(
+  title: Text(widget.voucher == null ? 'Create Voucher' : 'Edit Voucher'),
+  content: SizedBox(
+    height: MediaQuery.of(context).size.height * 0.7,  // Constrain to 70% of screen height (adjust as needed)
+    child: Form(
+      key: _formKey,
+      child: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
               // Station selection (only for new vouchers)
               if (widget.voucher == null) ...[
                 _buildStationDropdown(),
@@ -1459,14 +1474,9 @@ class _VoucherFormDialogState extends State<VoucherFormDialog> {
               
               const SizedBox(height: 12),
               
-              // Discount Type and Value
-              // Discount Type and Value (responsive)
-LayoutBuilder(
-  builder: (context, constraints) {
-    final isNarrow = constraints.maxWidth < 420; // tweak breakpoint if needed
-    if (isNarrow) {
-      // Stack vertically on small widths
-      return Column(
+// Replace your LayoutBuilder with this:
+MediaQuery.of(context).size.width < 420
+    ? Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           DropdownButtonFormField<String>(
@@ -1477,9 +1487,7 @@ LayoutBuilder(
               DropdownMenuItem(value: 'free_item', child: Text('Free Item')),
             ],
             onChanged: (value) {
-              if (value != null) {
-                setState(() => _discountType = value);
-              }
+              if (value != null) setState(() => _discountType = value);
             },
             decoration: const InputDecoration(labelText: 'Discount Type'),
           ),
@@ -1502,50 +1510,45 @@ LayoutBuilder(
             },
           ),
         ],
-      );
-    }
-
-    // Wide layout: keep them on one row
-    return Row(
-      children: [
-        Expanded(
-          child: DropdownButtonFormField<String>(
-            value: _discountType,
-            items: const [
-              DropdownMenuItem(value: 'percentage', child: Text('Percentage')),
-              DropdownMenuItem(value: 'fixed_amount', child: Text('Fixed Amount')),
-              DropdownMenuItem(value: 'free_item', child: Text('Free Item')),
-            ],
-            onChanged: (value) {
-              if (value != null) setState(() => _discountType = value);
-            },
-            decoration: const InputDecoration(labelText: 'Discount Type'),
-          ),
-        ),
-        const SizedBox(width: 12),
-        Expanded(
-          child: TextFormField(
-            controller: _discountValueController,
-            decoration: InputDecoration(
-              labelText: _discountType == 'percentage'
-                  ? 'Percentage (%)'
-                  : _discountType == 'fixed_amount'
-                      ? 'Amount (₱)'
-                      : 'Item Name',
+      )
+    : Row(
+        children: [
+          Expanded(
+            child: DropdownButtonFormField<String>(
+              value: _discountType,
+              items: const [
+                DropdownMenuItem(value: 'percentage', child: Text('Percentage')),
+                DropdownMenuItem(value: 'fixed_amount', child: Text('Fixed Amount')),
+                DropdownMenuItem(value: 'free_item', child: Text('Free Item')),
+              ],
+              onChanged: (value) {
+                if (value != null) setState(() => _discountType = value);
+              },
+              decoration: const InputDecoration(labelText: 'Discount Type'),
             ),
-            keyboardType: _discountType == 'free_item' ? TextInputType.text : TextInputType.number,
-            validator: (value) {
-              if (_discountType != 'free_item' && (value == null || value.isEmpty)) {
-                return 'Please enter a value';
-              }
-              return null;
-            },
           ),
-        ),
-      ],
-    );
-  },
-),
+          const SizedBox(width: 12),
+          Expanded(
+            child: TextFormField(
+              controller: _discountValueController,
+              decoration: InputDecoration(
+                labelText: _discountType == 'percentage'
+                    ? 'Percentage (%)'
+                    : _discountType == 'fixed_amount'
+                        ? 'Amount (₱)'
+                        : 'Item Name',
+              ),
+              keyboardType: _discountType == 'free_item' ? TextInputType.text : TextInputType.number,
+              validator: (value) {
+                if (_discountType != 'free_item' && (value == null || value.isEmpty)) {
+                  return 'Please enter a value';
+                }
+                return null;
+              },
+            ),
+          ),
+        ],
+      ),
 
               
               const SizedBox(height: 12),
@@ -1668,6 +1671,7 @@ LayoutBuilder(
           ),
         ),
       ),
+    ),
       actions: [
         TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text('Cancel')),
         ElevatedButton(onPressed: _submit, child: Text(widget.voucher == null ? 'Create' : 'Update')),
@@ -1752,6 +1756,7 @@ class _OfferFormDialogState extends State<OfferFormDialog> {
   String? _selectedStationId;
   List<Map<String, dynamic>> _stations = [];
   bool _isLoadingStations = true;
+  bool _isNotificationEnabled = true;
 
   @override
   void initState() {
@@ -1761,20 +1766,25 @@ class _OfferFormDialogState extends State<OfferFormDialog> {
     _validUntil = widget.offer?['validUntil'] != null ? DateTime.parse(widget.offer!['validUntil']) : null;
     _status = widget.offer?['status'] ?? 'Active';
     _selectedStationId = widget.offer?['stationId'];
+    _isNotificationEnabled = widget.offer?['isNotificationEnabled'] ?? true;
     _loadStations();
   }
 
   Future<void> _loadStations() async {
     try {
       final stations = await FirestoreService.getUserAssignedStations(widget.ownerId);
-      setState(() {
-        _stations = stations;
-        _isLoadingStations = false;
-      });
+      if (mounted) {
+        setState(() {
+          _stations = stations;
+          _isLoadingStations = false;
+        });
+      }
     } catch (e) {
-      setState(() {
-        _isLoadingStations = false;
-      });
+      if (mounted) {
+        setState(() {
+          _isLoadingStations = false;
+        });
+      }
     }
   }
 
@@ -1797,7 +1807,7 @@ class _OfferFormDialogState extends State<OfferFormDialog> {
       firstDate: now,
       lastDate: DateTime(now.year + 5),
     );
-    if (picked != null) {
+    if (picked != null && mounted) {
       setState(() {
         _validUntil = picked;
       });
@@ -1829,6 +1839,8 @@ class _OfferFormDialogState extends State<OfferFormDialog> {
       'validUntil': _validUntil!.toIso8601String(),
       'status': _status,
       'stationId': stationId,
+      'stationName': _stations.firstWhere((s) => s['id'] == stationId)['name'] ?? '',
+      'isNotificationEnabled': _isNotificationEnabled,
     };
     Navigator.of(context).pop(newOffer);
   }
@@ -1891,6 +1903,18 @@ class _OfferFormDialogState extends State<OfferFormDialog> {
                   }
                 },
                 decoration: const InputDecoration(labelText: 'Status'),
+              ),
+              const SizedBox(height: 12),
+              // Notification toggle for offer
+              SwitchListTile(
+                title: const Text('Enable Notifications'),
+                subtitle: const Text('Send notifications to users when this offer is created/updated'),
+                value: _isNotificationEnabled,
+                onChanged: (value) {
+                  setState(() {
+                    _isNotificationEnabled = value;
+                  });
+                },
               ),
             ],
           ),

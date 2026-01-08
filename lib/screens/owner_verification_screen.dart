@@ -1,4 +1,6 @@
 // lib/screens/owner_verification_screen.dart
+import 'dart:async';
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
@@ -31,6 +33,8 @@ class _OwnerVerificationScreenState extends State<OwnerVerificationScreen> {
   bool _isLoading = false;
   bool _isResending = false;
   String? _error;
+  Timer? _pollTimer;
+  int _pollAttempts = 0;
 
   @override
   void initState() {
@@ -58,6 +62,7 @@ class _OwnerVerificationScreenState extends State<OwnerVerificationScreen> {
         print('Error sending verification to existing user: $e');
       }
     }
+    _startVerificationPolling();
   }
 
   /*Future<void> _createGoogleAccountWithVerification() async {
@@ -479,6 +484,53 @@ class _OwnerVerificationScreenState extends State<OwnerVerificationScreen> {
         _isResending = false;
       });
     }
+  }
+
+  void _startVerificationPolling() {
+    _pollTimer?.cancel();
+    _pollAttempts = 0;
+    _pollTimer = Timer.periodic(const Duration(seconds: 3), (timer) async {
+      _pollAttempts++;
+      if (_pollAttempts > 20) {
+        timer.cancel();
+        return;
+      }
+      try {
+        final currentUser = FirebaseAuth.instance.currentUser;
+        if (currentUser == null) return;
+        await currentUser.reload();
+        final refreshed = FirebaseAuth.instance.currentUser;
+        if (refreshed != null && refreshed.emailVerified) {
+          timer.cancel();
+          // Mark verified in Firestore
+          await AuthService().markEmailUserAsVerified(refreshed.uid);
+          if (widget.isGoogleUser && widget.credential != null) {
+            try {
+              await refreshed.linkWithCredential(widget.credential!);
+            } catch (_) {}
+          }
+          if (mounted) {
+            // Navigate to document upload as the regular flow does
+            Navigator.pushReplacementNamed(context, '/owner-document-upload', arguments: {
+              'userId': refreshed.uid,
+              'name': widget.name,
+              'email': widget.email,
+              'isGoogleUser': widget.isGoogleUser,
+              'googleCredential': widget.credential,
+              'needsPasswordSetup': false,
+            });
+          }
+        }
+      } catch (_) {
+        // ignore transient errors
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _pollTimer?.cancel();
+    super.dispose();
   }
 
   @override

@@ -1,11 +1,13 @@
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 
 import 'models/gas_station.dart';
+import 'screens/edit_profile_screen.dart';
 import 'screens/for_you_screen.dart';
 import 'screens/list_screen.dart';
 import 'screens/map_tab.dart';
+import 'screens/notifications_screen.dart';
 import 'screens/profile_screen.dart';
-import 'services/debug_service.dart';
 import 'services/gas_station_service.dart';
 import 'services/navigation_service.dart';
 
@@ -22,16 +24,17 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _isLoading = true;
   String _error = '';
 
-  late final GlobalKey<ListScreenState> _listScreenKey = GlobalKey<ListScreenState>();
+  late final GlobalKey<ListScreenState> _listScreenKey =
+      GlobalKey<ListScreenState>();
+  late final GlobalKey<ForYouScreenState> _forYouScreenKey =
+      GlobalKey<ForYouScreenState>();
   late final List<Widget> _screens;
 
   void switchToListTabAndShowStation(GasStation station) {
     setState(() {
       _currentIndex = 2; // Switch to List tab
     });
-    // Use addPostFrameCallback to ensure the tab switch is complete before showing details
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      // Extract stationId from the GasStation object
       final stationId = station.id ?? station.name ?? '';
       _listScreenKey.currentState?.showStationDetails(stationId);
     });
@@ -41,7 +44,6 @@ class _HomeScreenState extends State<HomeScreen> {
     setState(() {
       _currentIndex = 2; // Switch to List tab
     });
-    // Use addPostFrameCallback to ensure the tab switch is complete before showing details
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _listScreenKey.currentState?.showStationDetails(stationId);
     });
@@ -51,8 +53,12 @@ class _HomeScreenState extends State<HomeScreen> {
   void initState() {
     super.initState();
     _screens = [
-      ForYouScreen(onNavigateToStation: switchToListTabAndShowStationById),
-      MapTab(assignedStations: [], onNavigateToStation: switchToListTabAndShowStation),
+      ForYouScreen(
+          key: _forYouScreenKey,
+          onNavigateToStation: switchToListTabAndShowStationById),
+      MapTab(
+          assignedStations: [],
+          onNavigateToStation: switchToListTabAndShowStation),
       ListScreen(key: _listScreenKey),
       const ProfileScreen(),
     ];
@@ -61,14 +67,11 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Future<void> _initializeApp() async {
     try {
-      // Fetch data first
       await GasStationService.fetchAndCacheGasStations(forceRefresh: true);
-      
-      // Then initialize other services
-    _navigationService.addListener(_onNavigationChanged);
+
+      _navigationService.addListener(_onNavigationChanged);
       await _navigationService.initializeVoiceNavigation();
       print('Voice navigation initialized');
-
     } catch (e) {
       print('Initialization failed: $e');
       setState(() {
@@ -89,7 +92,6 @@ class _HomeScreenState extends State<HomeScreen> {
         _error = '';
       });
 
-      // Refresh gas station data
       await GasStationService.fetchAndCacheGasStations(forceRefresh: true);
 
       if (mounted) {
@@ -125,19 +127,62 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   void _onNavigationChanged() {
-    // Removed automatic tab switching - let users stay on their current tab
-    // Users can manually switch to Maps tab if they want to see navigation
+    // Navigation logic
+  }
+
+  String _getTitle() {
+    switch (_currentIndex) {
+      case 0:
+        return 'For You';
+      case 1:
+        return 'Maps';
+      case 2:
+        return 'Gas Stations';
+      case 3:
+        return 'Profile';
+      default:
+        return 'Fuel-GO!';
+    }
+  }
+
+  void _openNotifications() async {
+    final result = await Navigator.of(context).push(
+      MaterialPageRoute(builder: (_) => const NotificationsScreen()),
+    );
+
+    if (result != null && result is Map<String, dynamic>) {
+      final highlightItemId = result['highlightItemId'] as String?;
+      final highlightType = result['highlightType'] as String?;
+      final tabIndex = result['tabIndex'] as int?;
+
+      if (highlightItemId != null &&
+          highlightType != null &&
+          tabIndex != null) {
+        setState(() {
+          _currentIndex = tabIndex;
+        });
+
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          _forYouScreenKey.currentState?.highlightItem(
+            itemId: highlightItemId,
+            type: highlightType,
+          );
+        });
+      }
+    }
   }
 
   Widget _buildBody() {
     if (_isLoading) {
-      return const Center(
+      return Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            CircularProgressIndicator(),
-            SizedBox(height: 16),
-            Text('Finding gas stations...'),
+            CircularProgressIndicator(
+              color: Theme.of(context).primaryColor,
+            ),
+            const SizedBox(height: 16),
+            const Text('Finding gas stations...'),
           ],
         ),
       );
@@ -149,6 +194,8 @@ class _HomeScreenState extends State<HomeScreen> {
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
+              Icon(Icons.error_outline, size: 48, color: Colors.red[300]),
+              const SizedBox(height: 16),
               Text(
                 _error,
                 style: const TextStyle(color: Colors.red, fontSize: 16),
@@ -166,42 +213,111 @@ class _HomeScreenState extends State<HomeScreen> {
     }
     return RefreshIndicator(
       onRefresh: _refreshData,
-      child: _screens[_currentIndex],
+      color: Theme.of(context).primaryColor,
+      child: AnimatedSwitcher(
+        duration: const Duration(milliseconds: 300),
+        child: _screens[_currentIndex],
+      ),
     );
   }
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
     return Scaffold(
-      body: _buildBody(),
-      bottomNavigationBar: BottomNavigationBar(
-        type: BottomNavigationBarType.fixed,
-        currentIndex: _currentIndex,
-        onTap: (index) {
-          setState(() {
-            _currentIndex = index;
-          });
-        },
-        selectedItemColor: Colors.blue,
-        unselectedItemColor: Colors.grey,
-        items: const [
-          BottomNavigationBarItem(
-            icon: Icon(Icons.favorite),
-            label: 'For You',
+      appBar: AppBar(
+        title: Text(
+          _getTitle(),
+          style: const TextStyle(
+            fontWeight: FontWeight.w600,
+            fontSize: 20,
           ),
-          BottomNavigationBarItem(
-            icon: Icon(Icons.map),
-            label: 'Maps',
+        ),
+        actions: [
+          StreamBuilder<QuerySnapshot>(
+            stream: FirebaseFirestore.instance
+                .collection('notifications')
+                .where('read', isEqualTo: false)
+                .limit(1)
+                .snapshots(),
+            builder: (context, snapshot) {
+              final hasUnread =
+                  snapshot.hasData && snapshot.data!.docs.isNotEmpty;
+              return IconButton(
+                icon: Badge(
+                  isLabelVisible: hasUnread,
+                  backgroundColor: Colors.red,
+                  smallSize: 10,
+                  alignment: Alignment.topLeft,
+                  child: const Icon(Icons.notifications),
+                ),
+                onPressed: _openNotifications,
+                tooltip: 'Notifications',
+              );
+            },
           ),
-          BottomNavigationBarItem(
-            icon: Icon(Icons.list),
-            label: 'List',
-          ),
-          BottomNavigationBarItem(
-            icon: Icon(Icons.person),
-            label: 'Profile',
-          ),
+          if (_currentIndex == 3)
+            IconButton(
+              icon: const Icon(Icons.edit),
+              tooltip: 'Edit Profile',
+              onPressed: () async {
+                final result = await Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (context) => const EditProfileScreen(),
+                  ),
+                );
+                if (result == true && mounted) {
+                  setState(() {});
+                }
+              },
+            ),
         ],
+      ),
+      body: _buildBody(),
+      bottomNavigationBar: Container(
+        decoration: BoxDecoration(
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(0.1),
+              blurRadius: 10,
+              offset: const Offset(0, -5),
+            ),
+          ],
+        ),
+        child: NavigationBar(
+          selectedIndex: _currentIndex,
+          onDestinationSelected: (index) {
+            setState(() {
+              _currentIndex = index;
+            });
+          },
+          backgroundColor: Colors.white,
+          indicatorColor: theme.primaryColor.withOpacity(0.2),
+          destinations: const [
+            NavigationDestination(
+              icon: Icon(Icons.favorite_border),
+              selectedIcon: Icon(Icons.favorite),
+              label: 'For You',
+            ),
+            NavigationDestination(
+              icon: Icon(Icons.map_outlined),
+              selectedIcon: Icon(Icons.map),
+              label: 'Maps',
+            ),
+            NavigationDestination(
+              icon: Icon(Icons.list_alt),
+              selectedIcon: Icon(Icons.list),
+              label: 'List',
+            ),
+            NavigationDestination(
+              icon: Icon(Icons.person_outline),
+              selectedIcon: Icon(Icons.person),
+              label: 'Profile',
+            ),
+          ],
+        ),
       ),
     );
   }

@@ -7,7 +7,7 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-import 'firebase_options.dart';  // ← ADD THIS LINE
+import 'firebase_options.dart'; // ← ADD THIS LINE
 import 'home_screen.dart';
 import 'screens/admin_approve_screen.dart';
 import 'screens/admin_dashboard_screen.dart';
@@ -28,6 +28,8 @@ import 'screens/verification_screen.dart';
 import 'services/auth_service.dart';
 import 'services/email_processor_service.dart';
 import 'services/notification_service.dart';
+
+final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
 
 // Custom theme extension for gradients
 class GradientTheme extends ThemeExtension<GradientTheme> {
@@ -63,9 +65,12 @@ class GradientTheme extends ThemeExtension<GradientTheme> {
       return this;
     }
     return GradientTheme(
-      primaryGradient: LinearGradient.lerp(primaryGradient, other.primaryGradient, t)!,
-      secondaryGradient: LinearGradient.lerp(secondaryGradient, other.secondaryGradient, t)!,
-      backgroundGradient: LinearGradient.lerp(backgroundGradient, other.backgroundGradient, t)!,
+      primaryGradient:
+          LinearGradient.lerp(primaryGradient, other.primaryGradient, t)!,
+      secondaryGradient:
+          LinearGradient.lerp(secondaryGradient, other.secondaryGradient, t)!,
+      backgroundGradient:
+          LinearGradient.lerp(backgroundGradient, other.backgroundGradient, t)!,
     );
   }
 }
@@ -75,7 +80,7 @@ void main() async {
   debugPrint('==== Fuel-GO! Application Starting ====');
   try {
     await Firebase.initializeApp(
-      options: DefaultFirebaseOptions.currentPlatform,  // ← ADD THIS LINE
+      options: DefaultFirebaseOptions.currentPlatform, // ← ADD THIS LINE
     );
     debugPrint('Firebase initialized successfully');
   } catch (e) {
@@ -90,6 +95,7 @@ void main() async {
 
   runApp(const MyApp());
 }
+
 // Move heavy initialization to background to prevent blocking main thread
 void _initializeServicesInBackground() async {
   // Use microtasks to prevent blocking the main thread
@@ -150,56 +156,130 @@ class MyApp extends StatelessWidget {
   const MyApp({Key? key}) : super(key: key);
 
   @override
-/*************  ✨ Windsurf Command ⭐  *************/
-/// Builds the Material app widget tree.
-///
-/// This includes the main app scaffold, routes, and theme configuration.
-///
-/// The app is divided into three main sections: the login flow,
-/// the owner dashboard, and the admin approval flow.
-///
-/*******  af31154b-5e21-48eb-ad62-77953b6e3474  *******/  Widget build(BuildContext context) {
+  Widget build(BuildContext context) {
     return MaterialApp(
+      navigatorKey: navigatorKey,
       title: 'Fuel-GO!',
       theme: ThemeData(
-        primaryColor: Colors.orange.shade800,
-        colorScheme: ColorScheme.fromSwatch().copyWith(
-          secondary: Colors.orange.shade600,
+        useMaterial3: true,
+        primaryColor: const Color(0xFFFF6D00),
+        scaffoldBackgroundColor: const Color(0xFFFFF8F0),
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: const Color(0xFFFF6D00),
+          primary: const Color(0xFFFF6D00),
+          secondary: const Color(0xFFFF9100),
+          background: const Color(0xFFFFF8F0),
         ),
-        appBarTheme: AppBarTheme(
-          backgroundColor: Colors.orange.shade700,
-          foregroundColor: Colors.white,
+        textTheme: const TextTheme(
+          displayLarge: TextStyle(
+              fontSize: 32,
+              fontWeight: FontWeight.bold,
+              color: Color(0xFF1A1A1A)),
+          displayMedium: TextStyle(
+              fontSize: 28,
+              fontWeight: FontWeight.bold,
+              color: Color(0xFF1A1A1A)),
+          bodyLarge: TextStyle(fontSize: 16, color: Color(0xFF333333)),
+          bodyMedium: TextStyle(fontSize: 14, color: Color(0xFF333333)),
         ),
-        scaffoldBackgroundColor: Colors.orange.shade50,
+        appBarTheme: const AppBarTheme(
+          backgroundColor: Colors.white,
+          elevation: 0,
+          centerTitle: true,
+          titleTextStyle: TextStyle(
+              color: Color(0xFF1A1A1A),
+              fontSize: 20,
+              fontWeight: FontWeight.bold),
+          iconTheme: IconThemeData(color: Color(0xFF1A1A1A)),
+        ),
         elevatedButtonTheme: ElevatedButtonThemeData(
           style: ElevatedButton.styleFrom(
-            backgroundColor: Colors.orange.shade700,
+            backgroundColor: const Color(0xFFFF6D00),
             foregroundColor: Colors.white,
+            elevation: 2,
+            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+            shape:
+                RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
           ),
         ),
+        inputDecorationTheme: InputDecorationTheme(
+          filled: true,
+          fillColor: Colors.white,
+          border: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(12),
+            borderSide: BorderSide(color: Colors.grey.shade300),
+          ),
+          enabledBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(12),
+            borderSide: BorderSide(color: Colors.grey.shade300),
+          ),
+          focusedBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(12),
+            borderSide: const BorderSide(color: Color(0xFFFF6D00), width: 2),
+          ),
+          errorBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(12),
+            borderSide: const BorderSide(color: Colors.red),
+          ),
+          contentPadding:
+              const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+        ),
+        cardTheme: CardThemeData(
+          elevation: 2,
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          color: Colors.white,
+          shadowColor: Colors.black,
+        ),
+        navigationBarTheme: NavigationBarThemeData(
+          backgroundColor: Colors.white,
+          indicatorColor: const Color(0xFFFF6D00).withOpacity(0.2),
+          labelTextStyle: WidgetStateProperty.resolveWith((states) {
+            if (states.contains(WidgetState.selected)) {
+              return const TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                color: Color(0xFFFF6D00), // Orange for selected
+              );
+            }
+            return TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w500,
+              color: Colors.grey.shade700, // Dark gray for unselected
+            );
+          }),
+          iconTheme: WidgetStateProperty.resolveWith((states) {
+            if (states.contains(WidgetState.selected)) {
+              return const IconThemeData(
+                color: Color(0xFFFF6D00), // Orange for selected
+              );
+            }
+            return IconThemeData(
+              color: Colors.grey.shade600, // Gray for unselected
+            );
+          }),
+        ),
         extensions: [
-          GradientTheme(
+          const GradientTheme(
             primaryGradient: LinearGradient(
-              colors: [Colors.orange.shade800, Colors.orange.shade400],
+              colors: [Color(0xFFFF6D00), Color(0xFFFF9100)],
               begin: Alignment.topLeft,
               end: Alignment.bottomRight,
             ),
             secondaryGradient: LinearGradient(
-              colors: [Colors.orange.shade600, Colors.orange.shade300],
-              begin: Alignment.topCenter,
-              end: Alignment.bottomCenter,
+              colors: [Color(0xFFFF9100), Color(0xFFFFAB40)],
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
             ),
             backgroundGradient: LinearGradient(
-              colors: [Colors.orange.shade50, Colors.white],
+              colors: [Color(0xFFFFF8F0), Color(0xFFFFFFFF)],
               begin: Alignment.topCenter,
               end: Alignment.bottomCenter,
             ),
           ),
         ],
       ),
-      home: kIsWeb
-          ? const WebAdminWrapper() // Web-only admin portal
-          : const AuthWrapper(), // Mobile app
+      home: kIsWeb ? const WebAdminWrapper() : const AuthWrapper(),
       routes: {
         '/role-selection': (context) => const StatefulRoleSelectionScreen(),
         '/login': (context) => const StatefulLoginScreen(),
@@ -212,11 +292,15 @@ class MyApp extends StatelessWidget {
         '/owner-dashboard': (context) => const StatefulOwnerDashboardScreen(),
         '/analytics': (context) => const AnalyticsScreen(),
         '/gas-price-history': (context) {
-          final args = ModalRoute.of(context)!.settings.arguments as Map<String, dynamic>? ?? {};
+          final args = ModalRoute.of(context)!.settings.arguments
+                  as Map<String, dynamic>? ??
+              {};
           final ownerId = args['ownerId'] as String? ?? '';
-          final assignedStations = (args['assignedStations'] as List<Map<String, dynamic>>?) ??
-              (args['assignedStations'] as List?)?.cast<Map<String, dynamic>>() ??
-              <Map<String, dynamic>>[];
+          final assignedStations =
+              (args['assignedStations'] as List<Map<String, dynamic>>?) ??
+                  (args['assignedStations'] as List?)
+                      ?.cast<Map<String, dynamic>>() ??
+                  <Map<String, dynamic>>[];
 
           return GasPriceHistoryScreen(
             ownerId: ownerId,
@@ -224,7 +308,8 @@ class MyApp extends StatelessWidget {
           );
         },
         '/owner-verification': (context) {
-          final args = ModalRoute.of(context)!.settings.arguments as Map<String, dynamic>?;
+          final args = ModalRoute.of(context)!.settings.arguments
+              as Map<String, dynamic>?;
           return StatefulScreenWrapper(
             routeName: '/owner-verification',
             child: OwnerVerificationScreen(
@@ -238,7 +323,8 @@ class MyApp extends StatelessWidget {
           );
         },
         '/owner-document-upload': (context) {
-          final args = ModalRoute.of(context)!.settings.arguments as Map<String, dynamic>?;
+          final args = ModalRoute.of(context)!.settings.arguments
+              as Map<String, dynamic>?;
           if (args != null) {
             return OwnerDocumentUploadScreen(
               userId: args['userId'] as String,
@@ -291,7 +377,8 @@ class WebAdminWrapper extends StatefulWidget {
 
 class _WebAdminWrapperState extends State<WebAdminWrapper> {
   bool _isCheckingAuth = true;
-  Widget? _targetScreen;  // ← ADD THIS LINE (remove _isAdmin, it's not needed anymore)
+  Widget?
+      _targetScreen; // ← ADD THIS LINE (remove _isAdmin, it's not needed anymore)
 
   @override
   void initState() {
@@ -302,18 +389,18 @@ class _WebAdminWrapperState extends State<WebAdminWrapper> {
   Future<void> _checkAdminAuth() async {
     try {
       final user = FirebaseAuth.instance.currentUser;
-      
+
       if (user != null) {
         // Check if user is admin
         final userDoc = await FirebaseFirestore.instance
             .collection('users')
             .doc(user.uid)
             .get();
-        
+
         if (userDoc.exists) {
           final userData = userDoc.data() as Map<String, dynamic>?;
           final role = userData?['role'] as String? ?? '';
-          
+
           if (role == 'admin') {
             // User is admin - show dashboard screen
             if (mounted) {
@@ -326,7 +413,7 @@ class _WebAdminWrapperState extends State<WebAdminWrapper> {
           }
         }
       }
-      
+
       // Not admin or not logged in - show admin login
       if (mounted) {
         setState(() {
@@ -380,7 +467,7 @@ class _WebAdminWrapperState extends State<WebAdminWrapper> {
       );
     }
 
-    return _targetScreen ?? const AdminLoginScreen();  // ← CHANGE THIS LINE
+    return _targetScreen ?? const AdminLoginScreen(); // ← CHANGE THIS LINE
   }
 }
 
@@ -389,7 +476,8 @@ class StatefulOwnerDocumentUploadScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final args = ModalRoute.of(context)!.settings.arguments as Map<String, dynamic>?;
+    final args =
+        ModalRoute.of(context)!.settings.arguments as Map<String, dynamic>?;
 
     final userId = args?['userId'] as String? ?? '';
     final name = args?['name'] as String? ?? '';
@@ -419,7 +507,7 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
   Widget? _initialScreen;
   Timer? _timeoutTimer;
   bool _hasInitialized = false;
-  
+
   // Add this to prevent multiple simultaneous auth checks
   bool _isCheckingAuth = false;
 
@@ -428,7 +516,7 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     debugPrint('[AuthWrapper] initState called');
-    
+
     // Use post frame callback to ensure widget tree is ready
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!_hasInitialized && !_isCheckingAuth) {
@@ -448,9 +536,9 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
   // Optimized auth check with better error handling
   Future<void> _performAuthCheck() async {
     if (_isCheckingAuth || !mounted) return;
-    
+
     _isCheckingAuth = true;
-    
+
     // Set a reasonable timeout
     _timeoutTimer = Timer(const Duration(seconds: 10), () {
       if (mounted && _isLoading) {
@@ -461,7 +549,7 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
 
     try {
       debugPrint('Starting optimized auth check...');
-      
+
       // Step 1: Quick Firebase Auth check (usually cached)
       User? firebaseUser;
       try {
@@ -485,7 +573,6 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
 
       debugPrint('Auth check completed successfully');
       _setInitialScreen(targetScreen);
-
     } catch (e, stackTrace) {
       debugPrint('Auth check error: $e');
       debugPrint('Stack trace: $stackTrace');
@@ -502,7 +589,7 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
       final prefs = await SharedPreferences.getInstance()
           .timeout(const Duration(seconds: 3));
       final savedRoute = prefs.getString('last_route');
-      
+
       if (savedRoute != null && _isValidAuthenticatedRoute(savedRoute)) {
         debugPrint('Using saved authenticated route: $savedRoute');
         return _getScreenFromRoute(savedRoute);
@@ -520,21 +607,24 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
         final userData = userDoc.data() as Map<String, dynamic>;
         final userRole = userData['role'] ?? 'customer';
         debugPrint('User role: $userRole');
-        
+
         // Role-based routing: Ensure users can only access screens appropriate for their role
         // This is an additional security layer on top of login method restrictions
         if (userRole == 'owner') {
           // Check approval status for owners
           final approvalStatus = userData['approvalStatus'] as String? ?? '';
-          final documentsSubmitted = userData['documentsSubmitted'] as bool? ?? false;
+          final documentsSubmitted =
+              userData['documentsSubmitted'] as bool? ?? false;
           final emailVerified = userData['emailVerified'] as bool? ?? false;
           final authProvider = userData['authProvider'] as String? ?? 'email';
-          
-          debugPrint('Owner status - approvalStatus: $approvalStatus, documentsSubmitted: $documentsSubmitted, emailVerified: $emailVerified');
-          
+
+          debugPrint(
+              'Owner status - approvalStatus: $approvalStatus, documentsSubmitted: $documentsSubmitted, emailVerified: $emailVerified');
+
           // Check if verification process is incomplete
           if (authProvider == 'email' && !emailVerified) {
-            debugPrint('Owner needs email verification - routing to verification screen');
+            debugPrint(
+                'Owner needs email verification - routing to verification screen');
             return StatefulScreenWrapper(
               routeName: '/owner-verification',
               child: OwnerVerificationScreen(
@@ -547,10 +637,11 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
               ),
             );
           }
-          
+
           // Check if documents need to be submitted
           if (!documentsSubmitted) {
-            debugPrint('Owner needs to submit documents - routing to document upload');
+            debugPrint(
+                'Owner needs to submit documents - routing to document upload');
             return StatefulScreenWrapper(
               routeName: '/owner-document-upload',
               child: OwnerDocumentUploadScreen(
@@ -560,7 +651,7 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
               ),
             );
           }
-          
+
           // Check approval status
           if (approvalStatus == 'approved') {
             debugPrint('Owner approved - routing to dashboard');
@@ -572,7 +663,8 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
               child: const OwnerWaitingApprovalScreen(),
             );
           } else if (approvalStatus == 'request_submission') {
-            debugPrint('Owner needs to resubmit documents - routing to document upload');
+            debugPrint(
+                'Owner needs to resubmit documents - routing to document upload');
             return StatefulScreenWrapper(
               routeName: '/owner-document-upload',
               child: OwnerDocumentUploadScreen(
@@ -603,7 +695,8 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
       } else {
         // User doc not found - this is an orphaned Firebase Auth user
         // Sign them out and redirect to role selection
-        debugPrint('User doc not found - orphaned Firebase Auth user detected. Signing out...');
+        debugPrint(
+            'User doc not found - orphaned Firebase Auth user detected. Signing out...');
         try {
           await AuthService().signOut();
           debugPrint('Orphaned user signed out successfully');
@@ -621,15 +714,17 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
             .doc(user.uid)
             .get()
             .timeout(const Duration(seconds: 2));
-        
+
         if (!userDoc.exists) {
-          debugPrint('User doc not found during error handling - signing out orphaned user');
+          debugPrint(
+              'User doc not found during error handling - signing out orphaned user');
           await AuthService().signOut();
           return const StatefulRoleSelectionScreen();
         }
       } catch (_) {
         // If we can't check, assume user might be orphaned and sign out to be safe
-        debugPrint('Could not verify user doc during error - signing out to be safe');
+        debugPrint(
+            'Could not verify user doc during error - signing out to be safe');
         try {
           await AuthService().signOut();
         } catch (_) {}
@@ -646,7 +741,7 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
       final prefs = await SharedPreferences.getInstance()
           .timeout(const Duration(seconds: 3));
       final savedRoute = prefs.getString('last_route');
-      
+
       if (savedRoute != null && _isValidUnauthenticatedRoute(savedRoute)) {
         debugPrint('Using saved unauthenticated route: $savedRoute');
         return _getScreenFromRoute(savedRoute);
@@ -654,7 +749,7 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
     } catch (e) {
       debugPrint('Error getting saved route for unauthenticated user: $e');
     }
-    
+
     debugPrint('Defaulting to role selection');
     return const StatefulRoleSelectionScreen();
   }
@@ -663,7 +758,7 @@ class _AuthWrapperState extends State<AuthWrapper> with WidgetsBindingObserver {
     if (!mounted) return;
 
     _timeoutTimer?.cancel();
-    
+
     // Use microtask to ensure this doesn't block the current execution
     scheduleMicrotask(() {
       if (mounted && _isLoading) {
@@ -808,7 +903,8 @@ class StatefulSignupScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final args = ModalRoute.of(context)?.settings.arguments as Map<String, dynamic>?;
+    final args =
+        ModalRoute.of(context)?.settings.arguments as Map<String, dynamic>?;
     return StatefulScreenWrapper(
       routeName: '/signup',
       child: SignupScreen(
@@ -861,7 +957,8 @@ class StatefulOwnerSignupScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final args = ModalRoute.of(context)!.settings.arguments as Map<String, dynamic>?;
+    final args =
+        ModalRoute.of(context)!.settings.arguments as Map<String, dynamic>?;
     return StatefulScreenWrapper(
       routeName: '/owner-signup',
       child: OwnerSignupScreen(
@@ -890,7 +987,8 @@ class StatefulVerificationScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final args = ModalRoute.of(context)!.settings.arguments as Map<String, dynamic>?;
+    final args =
+        ModalRoute.of(context)!.settings.arguments as Map<String, dynamic>?;
     return StatefulScreenWrapper(
       routeName: '/verification',
       child: VerificationScreen(

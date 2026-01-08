@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:fuelgo/models/analytics_data.dart';
 import 'package:fuelgo/services/analytics_service.dart';
@@ -65,7 +67,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
       }
     } catch (e) {
       // Handle error - check if it's a permission denied error
-      if (e.toString().contains('PERMISSION_DENIED') || e.toString().contains('Missing or insufficient permissions')) {
+      if (e.toString().contains('PERMISSION_DENIED') ||
+          e.toString().contains('Missing or insufficient permissions')) {
         // User is likely logged out, clear analytics data
         if (mounted) {
           setState(() {
@@ -98,55 +101,61 @@ class _ProfileScreenState extends State<ProfileScreen> {
     }
   }
 
-  Future<Map<String, String>> _getUserInfo() async {
+  Future<Map<String, dynamic>> _getUserInfo() async {
     final user = AuthService().currentUser;
-    if (user == null) return {'name': 'You', 'location': 'Unknown'};
-    
-    final userName = await UserServiceFixed.getUserName(user.uid);
-    // REMOVED: Hardcoded location - should use user's actual location if available
-    return {'name': userName, 'location': 'Location not specified'};
+    if (user == null) {
+      return {'name': 'You', 'location': 'Unknown', 'photoBase64': null};
+    }
+
+    final profile = await UserServiceFixed.getUserProfile(user.uid);
+    final userName =
+        profile['name'] ?? await UserServiceFixed.getUserName(user.uid);
+    final location = profile['location'] ?? 'Location not specified';
+    final photoBase64 = profile['photoBase64'];
+
+    return {
+      'name': userName,
+      'location': location,
+      'photoBase64': photoBase64,
+    };
   }
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-  title: const Text(
-    'Profile',
-    style: TextStyle(
-      fontWeight: FontWeight.w600,
-      fontSize: 20,
-    ),
-  ),
-  elevation: 2,
-  // or use `surfaceTintColor` for Material 3
-),
-      body: FutureBuilder<Map<String, String>>(
-        future: _getUserInfo(),
-        builder: (context, snap) {
-          final name = snap.data?['name'] ?? 'FuelGo User';
-          final location = snap.data?['location'] ?? 'Unknown';
-          
-          return _buildProfileContent(context, name, location);
-        },
-      ),
+    return FutureBuilder<Map<String, dynamic>>(
+      future: _getUserInfo(),
+      builder: (context, snap) {
+        final name = snap.data?['name'] ?? 'FuelGo User';
+        final location = snap.data?['location'] ?? 'Unknown';
+        final photoBase64 = snap.data?['photoBase64'];
+
+        return _buildProfileContent(context, name, location, photoBase64);
+      },
     );
   }
 
-  Widget _buildProfileContent(BuildContext context, String name, String location) {
+  Widget _buildProfileContent(
+      BuildContext context, String name, String location, String? photoBase64) {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
         Center(
           child: Column(
             children: [
-              const CircleAvatar(
+              CircleAvatar(
                 radius: 50,
-                child: Icon(
-                  Icons.person,
-                  size: 50,
-                  color: Colors.white,
-                ),
+                backgroundColor:
+                    Theme.of(context).primaryColor.withOpacity(0.1),
+                backgroundImage: photoBase64 != null && photoBase64.isNotEmpty
+                    ? MemoryImage(base64Decode(photoBase64))
+                    : null,
+                child: photoBase64 == null || photoBase64.isEmpty
+                    ? Icon(
+                        Icons.person,
+                        size: 50,
+                        color: Theme.of(context).primaryColor,
+                      )
+                    : null,
               ),
               const SizedBox(height: 16),
               Text(
@@ -174,7 +183,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
         _buildQuickActions(),
 
         const SizedBox(height: 24),
-        
 
         const SizedBox(height: 16),
 
@@ -244,9 +252,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
   Widget _buildMarketOverview() {
     if (_analyticsData.isEmpty) return const SizedBox();
 
-    final avgPrice = _analyticsData.fold<double>(0.0, 
-      (sum, data) => sum + data.currentPrice) / _analyticsData.length;
-    
+    final avgPrice = _analyticsData.fold<double>(
+            0.0, (sum, data) => sum + data.currentPrice) /
+        _analyticsData.length;
+
     final increasing = _analyticsData.where((d) => d.isPriceIncreasing).length;
     final decreasing = _analyticsData.length - increasing;
 
@@ -265,7 +274,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceAround,
               children: [
-                _buildMarketStat('Avg Price', '\$${avgPrice.toStringAsFixed(2)}'),
+                _buildMarketStat(
+                    'Avg Price', '\$${avgPrice.toStringAsFixed(2)}'),
                 _buildMarketStat('Stations', _analyticsData.length.toString()),
                 _buildMarketStat('↑ Trends', '$increasing'),
                 _buildMarketStat('↓ Trends', '$decreasing'),
@@ -313,12 +323,14 @@ class _ProfileScreenState extends State<ProfileScreen> {
         ListTile(
           leading: const Icon(Icons.history, color: Colors.green),
           title: const Text('My Claims History'),
-          subtitle: const Text('View your claimed offers and redeemed vouchers'),
+          subtitle:
+              const Text('View your claimed offers and redeemed vouchers'),
           trailing: const Icon(Icons.arrow_forward_ios),
           onTap: () {
             Navigator.push(
               context,
-              MaterialPageRoute(builder: (context) => const UserClaimsHistoryScreen()),
+              MaterialPageRoute(
+                  builder: (context) => const UserClaimsHistoryScreen()),
             );
           },
         ),
@@ -399,7 +411,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
         if (shouldLogout == true) {
           await AuthService().signOut();
           if (context.mounted) {
-            Navigator.pushNamedAndRemoveUntil(context, '/login', (route) => false);
+            Navigator.pushNamedAndRemoveUntil(
+                context, '/login', (route) => false);
           }
         }
       },

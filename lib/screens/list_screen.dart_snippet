@@ -1,0 +1,33 @@
+  /// Load ratings for a specific station
+  Future<void> _loadStationRatings(String stationId) async {
+    if (stationId.isEmpty) return;
+
+    try {
+      final ratingsSnapshot =
+          await FirestoreService.getStationRatingsWithComments(stationId).first;
+      final Map<String, Map<String, dynamic>> stationRatings = {};
+
+      for (final doc in ratingsSnapshot.docs) {
+        final data = doc.data() as Map<String, dynamic>;
+        final userId = data['userId'] as String? ?? '';
+        if (userId.isNotEmpty) {
+          stationRatings[userId] = {
+            'name': data['userName'] ?? userId,
+            'rating': (data['rating'] as num?)?.toDouble() ?? 0.0,
+            'comment': data['comment'] ?? '',
+            'updatedAt': (data['updatedAt'] as num?)?.toInt() ?? 0,
+          };
+        }
+      }
+
+      if (mounted) {
+        setState(() {
+          _ratings[stationId] = stationRatings;
+        });
+      } else {
+        _ratings[stationId] = stationRatings;
+      }
+    } catch (e) {
+      debugPrint('Error loading ratings for station $stationId: $e');
+    }
+  }

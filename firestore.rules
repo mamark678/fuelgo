@@ -11,39 +11,23 @@ service cloud.firestore {
     }
 
     function isAdmin() {
-      // Check if user is admin - adjust based on your admin check logic
       return isSignedIn() && 
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('role', '') == 'admin';
     }
 
     // --- Users ---
     match /users/{userId} {
-      // Allow read if:
-      // 1. User is reading their own document
-      // 2. User's email matches the authenticated email (when resource exists)
-      // 3. Querying by email for verification during signup (limited queries for email checks)
-      //    - Allow email existence checks during signup (limit 1, must query by email)
-      // 4. Admin reading any user document
+      // FIXED: Allow any authenticated user to read basic profile info
+      // This enables displaying profile pictures and names in comments/ratings
       allow read: if isOwner(userId)
         || (isSignedIn() && resource != null && resource.data.email == request.auth.token.email)
-        || (isSignedIn() && 
-            request.query != null && 
+        || isSignedIn()  // ← ADDED: Allow authenticated users to read other profiles
+        || (request.query != null && 
             request.query.limit != null &&
-            request.query.limit <= 1 &&
-            request.query.where != null &&
-            request.query.where.size() >= 1)
-        || // Allow email existence check during signup (even without auth for Google signup)
-           (request.query != null && 
-            request.query.limit != null &&
-            request.query.limit <= 1 &&
-            request.query.where != null &&
-            request.query.where.size() >= 1 &&
-            request.query.where[0].field == 'email')
+            request.query.limit <= 1)
         || isAdmin();
 
-      // Create: user creating their own document during signup
-      // Must be authenticated and creating document with their UID
-      // OR creating with their email (for email/password signup flow)
       allow create: if isSignedIn()
         && request.auth.uid == userId
         && request.resource.data.keys().hasAll(['name', 'email'])
@@ -51,49 +35,73 @@ service cloud.firestore {
         && request.resource.data.email is string
         && request.resource.data.email == request.auth.token.email;
 
-      // Update: user can update their own document, admin can update any
-      // Allow users to update specific fields during signup/verification flow
+      // FIXED: Added 'name', 'location', 'photoBase64' to allowed update fields
       allow update: if isOwner(userId)
         || isAdmin()
         || (isSignedIn() 
             && request.auth.uid == userId 
             && resource != null
             && (
-              // Allow updating approval-related fields after document submission
               (request.resource.data.diff(resource.data).affectedKeys().hasAny([
                   'documentsSubmitted', 'emailVerified', 'photoURL', 
                   'stationName', 'stationId', 'stationLat', 'stationLng',
                   'submittedAt', 'verifiedAt', 'authProvider', 'linkedProviders',
                   'googleLinked', 'tempPasswordUsed', 'pendingDocuments',
                   'documentImages', 'documentUrls', 'resubmittedAt', 
-                  'resubmissionCount', 'approvalStatus'
+                  'resubmissionCount', 'approvalStatus', 'favorites',
+                  'assignedStations', 'lastUpdated', 'name', 'location', 'photoBase64'  // ← ADDED these fields
                 ]))
-              // OR allow updating entire document during initial signup/verification
               || (request.resource.data.email == request.auth.token.email)
             ));
 
       allow delete: if isOwner(userId) || isAdmin();
 
-  // User's claimed offers subcollection
-  match /claimed_offers/{claimId} {
-    allow read: if isOwner(userId);
-    allow create: if isOwner(userId)
-      && request.resource.data.offerId is string
-      && request.resource.data.offerId != ''
-      && request.resource.data.claimedAt is timestamp;
-    allow delete: if isOwner(userId);
-  }
+      match /claimed_offers/{claimId} {
+        // User can read their own claimed offers
+        allow read: if isSignedIn() && request.auth.uid == userId;
+        
+        // Admin can read all claimed offers
+        allow read: if isAdmin();
+        
+        // User can create claimed offers for themselves
+        allow create: if isSignedIn()
+          && request.auth.uid == userId
+          && request.resource.data.offerId is string
+          && request.resource.data.offerId != ''
+          && request.resource.data.userId is string
+          && request.resource.data.userId == userId
+          && request.resource.data.claimedAt is timestamp;
+        
+        // User can delete their own claimed offers
+        allow delete: if isSignedIn() && request.auth.uid == userId;
+        
+        // Admin can delete any claimed offers
+        allow delete: if isAdmin();
+      }
 
-  // User's redeemed vouchers subcollection
-  match /redeemed_vouchers/{redeemedId} {
-    allow read: if isOwner(userId);
-    allow create: if isOwner(userId)
-      && request.resource.data.voucherId is string
-      && request.resource.data.voucherId != ''
-      && request.resource.data.redeemedAt is timestamp;
-    allow delete: if isOwner(userId);
-  }
-}
+      match /redeemed_vouchers/{redeemedId} {
+        // User can read their own redeemed vouchers
+        allow read: if isSignedIn() && request.auth.uid == userId;
+        
+        // Admin can read all redeemed vouchers
+        allow read: if isAdmin();
+        
+        // User can create redeemed vouchers for themselves
+        allow create: if isSignedIn()
+          && request.auth.uid == userId
+          && request.resource.data.voucherId is string
+          && request.resource.data.voucherId != ''
+          && request.resource.data.userId is string
+          && request.resource.data.userId == userId
+          && request.resource.data.redeemedAt is timestamp;
+        
+        // User can delete their own redeemed vouchers
+        allow delete: if isSignedIn() && request.auth.uid == userId;
+        
+        // Admin can delete any redeemed vouchers
+        allow delete: if isAdmin();
+      }
+    }
 
     // --- Gas stations ---
     match /gas_stations/{stationId} {
@@ -103,9 +111,20 @@ service cloud.firestore {
         && request.resource.data.ownerId is string
         && request.resource.data.ownerId == request.auth.uid;
 
-      allow update, delete: if (isSignedIn()
-        && resource.data.ownerId == request.auth.uid)
-        || isAdmin();
+      allow update: if isSignedIn() && (
+        // Owner can update everything
+        resource.data.ownerId == request.auth.uid
+        || isAdmin()
+        // ANY authenticated user can update priceReductions and vouchers (for redemptions)
+        || (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['priceReductions', 'lastUpdated']))
+        || (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['vouchers', 'lastUpdated']))
+        || (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['priceReductions', 'vouchers', 'lastUpdated']))
+      );
+      
+      allow delete: if isSignedIn() && (
+        resource.data.ownerId == request.auth.uid
+        || isAdmin()
+      );
 
       match /ratings/{ratingId} {
         allow read: if true;
@@ -126,20 +145,31 @@ service cloud.firestore {
         allow update, delete: if false;
       }
 
-      match /vouchers_redemptions/{userId} {
-        allow read: if isSignedIn() && (
-          request.auth.uid == userId ||
-          get(/databases/$(database)/documents/gas_stations/$(stationId)).data.ownerId == request.auth.uid
-        );
-        allow create: if request.auth.uid == userId
+      match /price_reduction_history/{historyId} {
+        allow read: if true;
+        allow create: if isSignedIn();
+        allow update, delete: if false;
+      }
+
+      match /vouchers_redemptions/{redemptionId} {
+        // Any signed-in user can read redemptions for this station
+        allow read: if isSignedIn();
+        
+        // User can create redemption records for themselves
+        allow create: if isSignedIn() 
           && request.resource.data.voucherId is string
           && request.resource.data.voucherId != ''
           && request.resource.data.stationId == stationId
+          && request.resource.data.userId is string
+          && request.resource.data.userId == request.auth.uid
           && request.resource.data.claimedAt is timestamp;
+        
+        // User can delete their own redemptions or station owner can delete
         allow delete: if isSignedIn() && (
-          request.auth.uid == userId ||
-          get(/databases/$(database)/documents/gas_stations/$(stationId)).data.ownerId == request.auth.uid
+          request.auth.uid == resource.data.userId ||
+          request.auth.uid == get(/databases/$(database)/documents/gas_stations/$(stationId)).data.ownerId
         );
+        
         allow update: if false;
       }
     }
@@ -149,7 +179,8 @@ service cloud.firestore {
       allow read: if true;
       allow create: if isSignedIn()
         && request.resource.data.userId == request.auth.uid;
-      allow update, delete: if false;
+      allow update, delete: if isSignedIn() && 
+        request.auth.uid == resource.data.userId;
     }
 
     // --- Comments ---
@@ -158,7 +189,8 @@ service cloud.firestore {
       allow create: if isSignedIn()
         && request.resource.data.userId == request.auth.uid
         && request.resource.data.createdAt is timestamp;
-      allow update, delete: if request.auth.uid == resource.data.userId;
+      allow update, delete: if isSignedIn() && 
+        request.auth.uid == resource.data.userId;
     }
 
     // --- Vouchers top-level ---
@@ -168,14 +200,16 @@ service cloud.firestore {
         && request.resource.data.ownerId == request.auth.uid
         && request.resource.data.stationId is string
         && request.resource.data.title is string;
-      allow update, delete: if request.auth.uid == resource.data.ownerId;
+      allow update, delete: if isSignedIn() && 
+        request.auth.uid == resource.data.ownerId;
 
       match /redemptions/{userId} {
         allow read: if isSignedIn() && (
           request.auth.uid == userId ||
           resource.data.ownerId == request.auth.uid
         );
-        allow create: if request.auth.uid == userId
+        allow create: if isSignedIn() && 
+          request.auth.uid == userId
           && request.resource.data.claimedAt is timestamp
           && request.resource.data.voucherId == voucherId;
         allow delete: if isSignedIn() && (
@@ -187,9 +221,7 @@ service cloud.firestore {
 
     // --- Approval Tokens ---
     match /approvalTokens/{tokenId} {
-      allow read, write: if false; // Only allow through specific rules below
-
-      // Allow creation of new tokens by authenticated users
+      // Allow creation by authenticated users
       allow create: if isSignedIn()
         && request.resource.data.userId is string
         && request.resource.data.userId != ''
@@ -197,14 +229,36 @@ service cloud.firestore {
         && request.resource.data.expiresAt is timestamp
         && request.resource.data.used is bool;
 
-      // Allow system/admin access for token validation and updates
-      // This allows the Cloud Function to read and update tokens
-      allow read, update: if true;
+      // Allow authenticated users to read tokens they own
+      allow read: if isSignedIn()
+        && request.auth.uid == resource.data.userId;
+
+      // Allow authenticated users to update their own tokens
+      allow update: if isSignedIn()
+        && request.auth.uid == resource.data.userId;
+
+      // Allow admins to read and delete
+      allow delete: if isAdmin();
     }
 
-    // --- Default deny ---
-    match /{document=**} {
-      allow read, write: if false;
+    // --- Notifications ---
+    match /notifications/{notificationId} {
+      // Allow all authenticated users to read notifications (for real-time listener)
+      allow read: if isSignedIn();
+      
+      // Allow authenticated users to create notifications (owners creating offers/vouchers)
+      allow create: if isSignedIn()
+        && request.resource.data.title is string
+        && request.resource.data.body is string
+        && request.resource.data.type is string
+        && request.resource.data.createdAt is timestamp;
+      
+      // Allow users to update their own notification read status
+      allow update: if isSignedIn()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['read']);
+      
+      // Don't allow delete (notifications are permanent records)
+      allow delete: if false;
     }
   }
 }

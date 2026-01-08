@@ -840,7 +840,6 @@ class _AmenitiesTabState extends State<AmenitiesTab> {
                               final hasImages = amenity is Map && amenity['type'] == 'image' && ((amenity['images'] != null && (amenity['images'] as List).isNotEmpty) || amenity['image'] != null);
                               return GestureDetector(
                                 onTap: hasImages ? () {
-                                  // Show images dialog if amenity has images
                                   final amenityData = amenities.firstWhere(
                                     (a) => (a is String ? a == amenityName : a['name'] == amenityName),
                                     orElse: () => null,
@@ -850,27 +849,54 @@ class _AmenitiesTabState extends State<AmenitiesTab> {
                                     if (images.isNotEmpty) {
                                       showDialog(
                                         context: context,
-                                        builder: (context) => AlertDialog(
-                                          title: Text(amenityName),
-                                          content: SizedBox(
-                                            height: 300,
-                                            child: PageView.builder(
-                                              itemCount: images.length,
-                                              itemBuilder: (context, index) {
-                                                return InteractiveViewer(
-                                                  panEnabled: true,
-                                                  boundaryMargin: const EdgeInsets.all(20),
-                                                  minScale: 0.5,
-                                                  maxScale: 4,
-                                                  child: Image.memory(
-                                                    base64Decode(images[index]),
-                                                    fit: BoxFit.contain,
+                                        builder: (context) => Dialog(
+                                          child: Container(
+                                            width: MediaQuery.of(context).size.width * 0.9,
+                                            height: MediaQuery.of(context).size.height * 0.7,
+                                            padding: const EdgeInsets.all(16),
+                                            child: Column(
+                                              mainAxisSize: MainAxisSize.min, // ← CRITICAL
+                                              children: [
+                                                Text(
+                                                  amenityName,
+                                                  style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                                                ),
+                                                const SizedBox(height: 16),
+                                                // ← KEY FIX: Wrap PageView with Expanded
+                                                Expanded(
+                                                  child: PageView.builder(
+                                                    itemCount: images.length,
+                                                    itemBuilder: (context, index) {
+                                                      return InteractiveViewer(
+                                                        panEnabled: true,
+                                                        boundaryMargin: const EdgeInsets.all(20),
+                                                        minScale: 0.5,
+                                                        maxScale: 4,
+                                                        child: Image.memory(
+                                                          base64Decode(images[index]),
+                                                          fit: BoxFit.contain,
+                                                        ),
+                                                      );
+                                                    },
                                                   ),
-                                                );
-                                              },
+                                                ),
+                                                const SizedBox(height: 16),
+                                                if (images.length > 1)
+                                                  Text(
+                                                    'Swipe to view ${images.length} images',
+                                                    style: TextStyle(
+                                                      fontSize: 12,
+                                                      color: Colors.grey[600],
+                                                    ),
+                                                  ),
+                                                const SizedBox(height: 8),
+                                                TextButton(
+                                                  onPressed: () => Navigator.of(context).pop(),
+                                                  child: const Text('Close'),
+                                                ),
+                                              ],
                                             ),
                                           ),
-                                          actions: [TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text('Close'))],
                                         ),
                                       );
                                     }
@@ -889,14 +915,14 @@ class _AmenitiesTabState extends State<AmenitiesTab> {
                                                 right: 0,
                                                 top: 0,
                                                 child: Container(
-                                                  padding: EdgeInsets.all(2),
-                                                  decoration: BoxDecoration(
+                                                  padding: const EdgeInsets.all(2),
+                                                  decoration: const BoxDecoration(
                                                     color: Colors.orange,
                                                     shape: BoxShape.circle,
                                                   ),
                                                   child: Text(
                                                     '${(amenity['images'] as List).length}',
-                                                    style: TextStyle(color: Colors.white, fontSize: 8),
+                                                    style: const TextStyle(color: Colors.white, fontSize: 8),
                                                   ),
                                                 ),
                                               ),
@@ -908,7 +934,7 @@ class _AmenitiesTabState extends State<AmenitiesTab> {
                                 ),
                               );
                             }).toList(),
-                          ),
+                          )
                           ],
                         ],
                       ),
